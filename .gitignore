@@ -1,0 +1,55 @@
+# ROS 2 build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+
+# System and IDEs
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets and local data
+.env
+*.env
+*.log
+*.csv
+
+# ── Web frontend (nift_web_frontend) ────────────────────
+# Dependencies (reinstalled via `npm install`)
+nift_web_frontend/node_modules/
+
+# Vite build output
+nift_web_frontend/dist/
+
+# Vite dependency cache (auto-generated, machine-specific)
+nift_web_frontend/.vite/
+
+# Local env overrides (e.g. VITE_ROS_URL=ws://<host>:9090)
+nift_web_frontend/.env.local
+nift_web_frontend/.env.*.local
+
+# TypeScript build info cache
+nift_web_frontend/*.tsbuildinfo
+
+# ── CARLA / Mcity Digital Twin (nift_simulation/nift_carla) ─────────────
+# The digital twin is multi-GB Git LFS content from https://github.com/mcity/mcity-digital-twin
+# and lives OUTSIDE this repo ($MCITY_TWIN_DIR). Never commit Unreal assets here.
+mcity-digital-twin/
+nift_simulation/nift_carla/docker/content/
+*.umap
+*.uasset
+*.uexp
+*.ubulk
+*.pak
+
+# rosbags
+nift_simulation/nift_carla/bags/
+rosbag2_*/

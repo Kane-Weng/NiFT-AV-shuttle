@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: colcon build + test (ROS 2 Humble)
+    runs-on: ubuntu-22.04
+    container: ros:humble
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # The repo is a workspace's src/ directory, so check it out as one.
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-pip
+          rosdep update --rosdistro humble
+          rosdep install --from-paths src --ignore-src --rosdistro humble -y
+          find src -name requirements.txt -not -path '*/node_modules/*' -print0 \
+            | xargs -0 -r -n1 pip3 install -r
+
+      - name: Build
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --symlink-install --event-handlers console_cohesion+
+
+      - name: Test
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon test --event-handlers console_cohesion+
+          colcon test-result --verbose
