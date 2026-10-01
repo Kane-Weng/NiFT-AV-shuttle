@@ -1,4 +1,4 @@
-# NiFT Autonomous Shuttle — ROS 2 autonomy stack
+# NiFT Autonomous Shuttle: ROS 2 Autonomy Stack
 
 [![CI](https://github.com/Kane-Weng/NiFT-AV-shuttle/actions/workflows/ci.yml/badge.svg)](https://github.com/Kane-Weng/NiFT-AV-shuttle/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -50,7 +50,7 @@ The simulator replaces only what the hardware provides (GNSS beacons, the LiDAR 
 
 | Package | Role | Status |
 |---|---|---|
-| `nift_bringup` | Vehicle constants (single source of truth), system launch | coming soon |
+| [`nift_bringup`](nift_bringup) | Vehicle constants (single source of truth), system launch | Vehicle constants available. Launch coming soon. |
 | `nift_sensor` | GNSS localization, LiDAR obstacle detection, TF broadcasting | coming soon |
 | `nift_waypoint` | Lanelet2 routing, smooth path generation | coming soon |
 | `nift_control` | Pure Pursuit + ADRC control, safety filters, CAN encoding | coming soon |
@@ -70,7 +70,7 @@ The simulator replaces only what the hardware provides (GNSS beacons, the LiDAR 
 
 ## Getting started
 
-Requires Ubuntu 22.04 and ROS 2 Humble. The repository is a colcon workspace's `src/` directory:
+The stack runs on Ubuntu 22.04 with ROS 2 Humble. Clone this repository as the `src/` directory of a colcon workspace, then build it.
 
 ```bash
 mkdir -p ~/nift_ws && cd ~/nift_ws
@@ -88,7 +88,7 @@ The [project wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki) covers the
 
 ## Author
 
-**Kane Weng** — designed and wrote the autonomy software stack.
+**Kane Weng** designed and wrote the autonomy software stack.
 
 ## Acknowledgements
 
