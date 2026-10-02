@@ -1,0 +1,7 @@
+shuttle_dynamic_broadcaster:
+  ros__parameters:
+    gnss:
+      offset_x: 1.3   # meters — front GNSS beacon distance forward from base_link
+      offset_y: 0.0   # meters — lateral offset (0 = centered)
+    map_origin_lat: 42.3005   # Mcity map origin latitude
+    map_origin_lon: -83.6987  # Mcity map origin longitude

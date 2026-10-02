@@ -51,7 +51,7 @@ The simulator replaces only what the hardware provides (GNSS beacons, the LiDAR 
 | Package | Role | Status |
 |---|---|---|
 | [`nift_bringup`](nift_bringup) | Vehicle constants (single source of truth), system launch | Vehicle constants available. Launch coming soon. |
-| `nift_sensor` | GNSS localization, LiDAR obstacle detection, TF broadcasting | coming soon |
+| [`nift_sensor`](nift_sensor) | GNSS localization, LiDAR obstacle detection, TF broadcasting | Available |
 | `nift_waypoint` | Lanelet2 routing, smooth path generation | coming soon |
 | [`nift_control`](nift_control) | Pure Pursuit + ADRC control, safety filters, CAN encoding | CAN interface available. Controllers coming soon. |
 | `nift_simulation` | Vehicle model (URDF) and the CARLA bridge with its virtual ECU | coming soon |
