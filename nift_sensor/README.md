@@ -12,7 +12,7 @@ The package contains three nodes that run continuously alongside each other.
 Hardware / Simulation
 ─────────────────────────────────────────────────────────────────────
 Mcity Octane RTK server  (real)  ─┐
-  or /gps/data_1, /gps/data_2   (sim) ─┘ → [beacon_node]
+  or nift_carla Octane emulator (sim) ─┘ → [beacon_node]
                                            → /gnss/fix
                                            → /gnss/heading_deg
                                            → /gnss/vel
@@ -21,8 +21,7 @@ LiDAR (Velodyne) → /scan → [lidar_node]
                           → /obstacles  (2D polygon per obstacle cluster)
 
 /gnss/fix + /gnss/heading_deg → [shuttle_tf_node]
-                               → TF: map → base_link  (real)
-                               → TF: map → odom       (sim)
+                               → TF: map → base_link  (real and CARLA sim)
 ```
 
 ---
@@ -33,9 +32,11 @@ LiDAR (Velodyne) → /scan → [lidar_node]
 
 The shuttle uses **two GPS antennas** (front and rear) for RTK localization. Having two antennas is what enables precise heading without an IMU: the vector from the rear antenna to the front antenna points in exactly the direction the vehicle is facing.
 
-**Real-world mode** connects via Socket.io to the Mcity Octane RTK server — a local infrastructure that provides centimeter-accurate positioning using a fixed base station at Mcity. The node subscribes to a real-time data stream, filters for the shuttle's specific beacon IDs, and normalizes the data format.
+`beacon_node` connects via Socket.io to the Mcity Octane RTK server — a local infrastructure that provides centimeter-accurate positioning using a fixed base station at Mcity. The node subscribes to a real-time data stream, filters for the shuttle's specific beacon IDs, and normalizes the data format.
 
-**Simulation mode** uses `ApproximateTimeSynchronizer` to align two `NavSatFix` topics published by the Gazebo GPS plugin (one per antenna). Heading is computed the same way as in real-world.
+**Simulation** runs the same code. The CARLA bridge (`nift_carla`, published later) serves the same Socket.io protocol from its Octane emulator, and its launch files point `MCITY_OCTANE_*` at it.
+
+**Stale data.** If either antenna has not delivered a new position for `gnss_timeout_s`, the node stops publishing until both report again. An Octane outage shows up as silence on `/gnss/*`, and `trajectory_controller` then brings the shuttle to a safe stop.
 
 **Heading computation:**
 ```
@@ -43,11 +44,7 @@ heading = atan2(Δlon, Δlat)   where Δ = front_antenna − rear_antenna
 ```
 This gives a compass bearing (degrees from North, clockwise) that is published directly.
 
-**Speed estimation (simulation):**
-```
-v = haversine_distance(pos_prev, pos_curr) / Δt
-```
-In real-world mode, the RTK server provides velocity directly.
+**Speed:** the RTK server provides velocity directly (`/gnss/vel`).
 
 **Published topics:**
 
@@ -126,7 +123,7 @@ The rest of the stack lives in the **map frame** (a fixed, UTM-projected coordin
 GPS lat/lon  →  UTM Zone 17N (meters East/North)
                 │
                 │  subtract GNSS antenna offset
-                │  (antenna is 1.041 m ahead of rear axle, rotated by heading)
+                │  (front antenna `gnss.offset_x` ahead of base_link = mid-wheelbase, rotated by heading)
                 ▼
              base_link position in map frame
                 │
@@ -135,15 +132,9 @@ GPS lat/lon  →  UTM Zone 17N (meters East/North)
              map → base_link transform
 ```
 
-**Why two modes?**
+Nothing else publishes into this TF chain (no wheel odometry, on the shuttle or in CARLA), so the node always publishes `map → base_link` directly.
 
-In simulation, `ros2_control` already publishes `odom → base_link` (integrated from wheel odometry). Publishing `map → base_link` directly would create a **TF cycle** (map → odom → base_link, and also map → base_link — ambiguous). Instead, the node computes the implied `map → odom` offset:
-
-```
-T(map→odom) = T(map→base_link) × inv(T(odom→base_link))
-```
-
-In real-world mode, there is no `odom → base_link` from ros2_control, so `map → base_link` is published directly.
+**Open question: the antenna lever arm on the shuttle.** `config/shuttle_tf.yaml` sets `gnss.offset_x: 1.3` under the node name `shuttle_dynamic_broadcaster`, but `launch/shuttle_tf.launch.py` starts the node as `shuttle_tf_broadcaster`. So the file does not apply, and the code default of 1.041 m is used. The URDF puts the antennas at ±1.04 m. Which value matches the shuttle has to be decided before either is changed.
 
 ---
 
@@ -153,7 +144,7 @@ In real-world mode, there is no `odom → base_link` from ros2_control, so `map 
 
 | Parameter | Default | Description |
 |---|---|---|
-| `use_sim_mode` | `false` | `true` = read from Gazebo GPS topics, `false` = Mcity Octane socket |
+| `gnss_timeout_s` | `0.5` | Stop publishing `/gnss/*` once either antenna has had no new position this long |
 
 Real-world credentials come from `nift_sensor/.env` (not committed to git).
 
@@ -174,7 +165,7 @@ Real-world credentials come from `nift_sensor/.env` (not committed to git).
 
 | Parameter | Default | Description |
 |---|---|---|
-| `gnss.offset_x` | `1.041` m | GNSS antenna distance ahead of rear axle |
+| `gnss.offset_x` | `1.041` m | Front GNSS antenna distance ahead of `base_link` (mid-wheelbase); see the open question above |
 | `gnss.offset_y` | `0.0` m | Lateral GNSS offset |
 | `map_origin_lat` | `42.3005` | UTM projection origin latitude (Mcity) |
 | `map_origin_lon` | `−83.6987` | UTM projection origin longitude (Mcity) |

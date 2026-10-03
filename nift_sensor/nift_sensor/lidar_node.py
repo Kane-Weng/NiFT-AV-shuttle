@@ -425,13 +425,20 @@ class LidarObstacleNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = LidarObstacleNode()
+    node = None
     try:
+        node = LidarObstacleNode()
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # Ctrl-C race: rclpy's SIGINT handler can shut the context down mid-construction or
+        # mid-spin (RCLError). With the context still alive it is a real error.
+        if rclpy.ok():
+            raise
     finally:
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         rclpy.try_shutdown()    # Ctrl-C: rclpy's SIGINT handler has already shut the context down
 
 

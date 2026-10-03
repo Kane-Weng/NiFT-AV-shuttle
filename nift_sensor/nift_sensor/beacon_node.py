@@ -7,33 +7,26 @@ Author: Jimmy Wang, Kane Weng
 Date: April 11, 2026
 
 Description:
-  Unified GNSS hardware interface for the NiFT shuttle.
-  Operates in two modes controlled by the `use_sim_mode` ROS 2 parameter.
+  GNSS hardware interface for the NiFT shuttle.
 
-  - Real-World Mode (use_sim_mode == False):
-    Connects to the Mcity Octane Socket.io RTK server and receives live
-    dual-GNSS beacon updates for the front and rear antennas. Normalizes
-    the payload, then routes it through the shared publishing logic.
-    Stale gate: if either antenna has not delivered a *new* position
-    (`updated` changed) for `gnss_timeout_s` (node clock), nothing is
-    published until both report again, so an Octane outage shows up
-    downstream as silence instead of a frozen fix republished at 50 Hz.
+  Connects to the Mcity Octane Socket.io RTK server and receives live
+  dual-GNSS beacon updates for the front and rear antennas. Normalizes
+  the payload, then routes it through the publishing logic.
+  Stale gate: if either antenna has not delivered a *new* position
+  (`updated` changed) for `gnss_timeout_s` (node clock), nothing is
+  published until both report again, so an Octane outage shows up
+  downstream as silence instead of a frozen fix republished at 50 Hz.
 
-  - Simulation Mode (use_sim_mode == True):
-    Does NOT initialize Socket.io or load .env. Instead, subscribes to
-    two Gazebo NavSatFix topics (/gps/data_1 = front, /gps/data_2 = rear)
-    via message_filters.ApproximateTimeSynchronizer. Estimates forward
-    velocity from consecutive front-antenna GPS positions (haversine
-    distance / time), then routes through the same shared publishing logic.
+  Simulation runs this same code: nift_carla's Octane emulator serves the
+  same protocol, and its launch file points MCITY_OCTANE_* at it.
 
-  Shared publishing logic (_publish_gnss):
+  Publishing logic (_publish_gnss):
   - /gnss/fix         — front antenna position only (lat/lon/alt)
   - /gnss/heading_deg — compass heading of the rear -> front vector
   - /gnss/vel         — TwistStamped with linear.x = speed in m/s
 
 Usage:
   ros2 run nift_sensor beacon_node
-  ros2 run nift_sensor beacon_node --ros-args -p use_sim_mode:=true
 """
 
 from datetime import datetime, timezone
@@ -46,7 +39,6 @@ import diagnostic_msgs.msg
 import diagnostic_updater
 from dotenv import load_dotenv
 from geometry_msgs.msg import TwistStamped
-import message_filters
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -142,20 +134,6 @@ def compute_heading_from_beacons(lat_r, lon_r, lat_f, lon_f):
     return heading_rad, heading_deg
 
 
-def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """
-    Return the great-circle distance in metres between two WGS-84 coordinates.
-
-    Used by the simulation path to estimate vehicle speed from consecutive front-antenna fixes.
-    """
-    R = 6371000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
-    return R * 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-
-
 # ----------------------------
 # Node
 # ----------------------------
@@ -165,24 +143,18 @@ class BeaconNode(Node):
     def __init__(self):
         super().__init__('nift_beacon_node')
 
-        self.declare_parameter('use_sim_mode', False)
-        self.use_sim_mode = self.get_parameter('use_sim_mode').value
-
-        # Publishers — shared between both modes
+        # Publishers
         self.pub_fix = self.create_publisher(NavSatFix, '/gnss/fix', qos_profile_sensor_data)
         self.pub_vel = self.create_publisher(TwistStamped, '/gnss/vel', qos_profile_sensor_data)
         self.pub_heading = self.create_publisher(
             Float64, '/gnss/heading_deg', qos_profile_sensor_data)
 
-        # Diagnostics — shared between both modes
+        # Diagnostics
         self.diag_updater = diagnostic_updater.Updater(self)
         self.diag_updater.setHardwareID('gnss_beacon')
         self.diag_updater.add('GNSS Interface', self._diagnostics_callback)
 
-        if self.use_sim_mode:
-            self._init_sim_mode()
-        else:
-            self._init_real_mode()
+        self._init_real_mode()
 
     # =========================================================================
     # REAL-WORLD MODE
@@ -302,63 +274,6 @@ class BeaconNode(Node):
             float(lat_f), float(lon_f), float(lat_r), float(lon_r), alt_f, stamp, speed_mps)
 
     # =========================================================================
-    # SIMULATION MODE
-    # =========================================================================
-
-    def _init_sim_mode(self):
-        """Initialize ApproximateTimeSynchronizer on the two Gazebo GPS topics."""
-        self._prev_front_lat = None
-        self._prev_front_lon = None
-        self._prev_front_stamp_sec = None
-
-        sub_front = message_filters.Subscriber(
-            self, NavSatFix, '/gps/data_1', qos_profile=qos_profile_sensor_data
-        )
-        sub_rear = message_filters.Subscriber(
-            self, NavSatFix, '/gps/data_2', qos_profile=qos_profile_sensor_data
-        )
-
-        self._sync = message_filters.ApproximateTimeSynchronizer(
-            [sub_front, sub_rear],
-            queue_size=10,
-            slop=0.1,
-        )
-        self._sync.registerCallback(self._sim_gps_callback)
-
-        self.get_logger().info(
-            'Simulation GNSS mode active. Waiting for /gps/data_1 and /gps/data_2...')
-
-    def _sim_gps_callback(self, front_msg: NavSatFix, rear_msg: NavSatFix):
-        """
-        Handle a synchronized pair of Gazebo GPS fixes.
-
-        Estimates forward speed from the haversine distance between consecutive
-        front-antenna fixes.
-        """
-        lat_f = front_msg.latitude
-        lon_f = front_msg.longitude
-        lat_r = rear_msg.latitude
-        lon_r = rear_msg.longitude
-        alt_f = front_msg.altitude
-
-        stamp = front_msg.header.stamp
-        curr_stamp_sec = stamp.sec + stamp.nanosec * 1e-9
-
-        # Estimate speed: haversine distance / elapsed time since last front fix
-        speed_mps = None
-        if self._prev_front_lat is not None:
-            dt = curr_stamp_sec - self._prev_front_stamp_sec
-            if dt > 1e-6:
-                dist = haversine_distance(self._prev_front_lat, self._prev_front_lon, lat_f, lon_f)
-                speed_mps = dist / dt
-
-        self._prev_front_lat = lat_f
-        self._prev_front_lon = lon_f
-        self._prev_front_stamp_sec = curr_stamp_sec
-
-        self._publish_gnss(lat_f, lon_f, lat_r, lon_r, alt_f, stamp, speed_mps)
-
-    # =========================================================================
     # SHARED PUBLISHING LOGIC
     # =========================================================================
 
@@ -373,7 +288,7 @@ class BeaconNode(Node):
         speed_mps,
     ):
         """
-        Publish the GNSS topics, through one path for both real-world and simulation modes.
+        Publish the GNSS topics for the latest front and rear beacon pair.
 
           - /gnss/fix         uses the front antenna position only
           - /gnss/heading_deg is computed from the rear -> front antenna vector
@@ -409,11 +324,7 @@ class BeaconNode(Node):
     # =========================================================================
 
     def _diagnostics_callback(self, stat):
-        if self.use_sim_mode:
-            stat.summary(
-                diagnostic_msgs.msg.DiagnosticStatus.OK,
-                'Simulation mode: reading Gazebo GPS topics')
-        elif hasattr(self, 'sio') and self.sio.connected and self._stale:
+        if hasattr(self, 'sio') and self.sio.connected and self._stale:
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.ERROR,
                          'Connected, but beacon data STALE')
         elif hasattr(self, 'sio') and self.sio.connected:
@@ -425,18 +336,25 @@ class BeaconNode(Node):
 
 def main():
     rclpy.init()
-    node = BeaconNode()
+    node = None
     try:
+        node = BeaconNode()
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except Exception:
+        # Ctrl-C race: rclpy's SIGINT handler can shut the context down mid-construction or
+        # mid-spin (RCLError). With the context still alive it is a real error.
+        if rclpy.ok():
+            raise
     finally:
         if hasattr(node, 'sio'):
             try:
                 node.sio.disconnect()
             except Exception:
                 pass
-        node.destroy_node()
+        if node is not None:
+            node.destroy_node()
         rclpy.try_shutdown()    # Ctrl-C: rclpy's SIGINT handler has already shut the context down
 
 
