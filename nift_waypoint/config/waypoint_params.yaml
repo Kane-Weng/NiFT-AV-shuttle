@@ -1,0 +1,24 @@
+waypoint_node:
+  ros__parameters:
+    # --- Map & Localization Settings ---
+    map_file: ""                           # Path to the Lanelet2 OSM map file (Required)
+    map_origin_lat: 42.3005                # Map origin latitude (Default centers near Mcity)
+    map_origin_lon: -83.6987               # Map origin longitude
+    fix_topic: "/gnss/fix"                 # GNSS topic for primary localization
+    odom_topic: "/ackermann_like_controller/odom" # Odometry topic for heading and GNSS fallback
+    
+    # --- Visualization & Processing ---
+    map_publish_period_s: 1.0              # Frequency (in seconds) to publish map markers to RViz
+    path_downsample_stride: 5              # Step size for downsampling the final published path points
+    
+    # --- Routing & Planner Constraints ---
+    planning_min_turn_radius_margin: 1.10  # Multiplier for the Ackermann min turn radius during strict graph planning
+    relaxed_turn_radius_margin: 0.85       # Multiplier for relaxed turn radius checks
+    curvature_check_point_step: 3          # Point step size when validating path curvature
+    max_candidate_routes: 40               # Maximum number of routes the Lanelet2 planner should explore
+    max_search_expansions: 3000            # Maximum graph expansions during route search
+    allow_lane_changes_in_search: false    # Whether the planner is allowed to route across lane changes
+    
+    # --- Fallback & Offroad Behavior ---
+    offroad_distance_threshold_m: 15.0     # Distance from map to trigger the force-offroad direct routing fallback
+    bridge_bezier_pts: 8                   # Number of points generated for smoothing the Entry/Exit Bezier curve phases
