@@ -1,0 +1,22 @@
+# Path following and safety filter parameters for trajectory_controller.
+
+trajectory_controller:
+  ros__parameters:
+    goal_tolerance: 2.0       # meters — distance to final waypoint that counts as "arrived"
+    pure_pursuit_ld_min: 4.0  # meters — minimum adaptive lookahead distance (low speed)
+    pure_pursuit_ld_max: 8.0  # meters — maximum adaptive lookahead distance (high speed)
+    base_speed: 3.5           # m/s — nominal cruising speed
+    cte_tolerance: 1.5        # meters — cross-track error above which speed is reduced
+    decel_distance: 10.0      # meters — distance from goal at which deceleration begins
+    min_crawl_speed: 0.5      # m/s — minimum speed during final deceleration approach
+    min_safe_dist: 2.0        # meters — fixed component of the obstacle safety margin
+    safe_dist_gain: 1.5       # speed-dependent gain added to the safety margin
+    filter_type: "cbf"        # safety filter: "distance_stop" | "cbf" | "potential_field" | "none" (pass-through)
+    collision_zone_dist: 0.8  # meters — if any obstacle is closer than this while autonomous, auto-trigger SAFE_STOP
+    obstacle_timeout_s: 0.5   # seconds — no usable /obstacles this long while autonomous -> SAFE_STOP (not with filter none)
+    # localization_source (gnss | filter) is set by the launch (filter on alone = ekf -> filter); with filter only:
+    localization_status_timeout_s: 0.3  # seconds — no /localization/status (or odom) this long while driving -> SAFE_STOP
+    degraded_speed_cap_mps: 1.0         # m/s — target speed limit while the localization is DEGRADED (bridging a gap)
+    degraded_cap_after_s: 0.0           # seconds — apply that cap only once DEGRADED has lasted this long (0 = at once)
+    # safe_stop_hold_steering: true     # SAFE_STOP keeps the steering it was commanding (default: true with filter,
+    #                                     false with gnss = steering 0 as before); uncomment to force either way

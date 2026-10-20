@@ -41,6 +41,7 @@ Usage:
 """
 from enum import Enum
 
+from nift_common.can_protocol import CAN_CMD_MAX  # brake / pedal full scale (0-255)
 import numpy as np
 
 from .can_interface import Gear
@@ -52,10 +53,6 @@ class VehicleMode(Enum):
     REVERSE = 2
     BRAKING_TO_REVERSE = 3
     BRAKING_TO_FORWARD = 4
-
-
-# Constants
-CAN_CMD_LIMIT = 255           # Maximum CAN bus actuator command (0-255)
 
 
 class NiftVehicleBridge():
@@ -124,7 +121,7 @@ class NiftVehicleBridge():
         throttle = 0
         brake = 0
         gear = Gear.NEUTRAL
-        actuation_mag = int(np.clip(abs(u), 0, CAN_CMD_LIMIT))
+        actuation_mag = int(np.clip(abs(u), 0, CAN_CMD_MAX))
 
         if self.state in [VehicleMode.FORWARD, VehicleMode.BRAKING_TO_REVERSE]:
             gear = Gear.FORWARD

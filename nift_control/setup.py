@@ -32,6 +32,11 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'trajectory_controller = nift_control.trajectory_controller:main',
+            # Developer / tuning tool: guarded test passes + the tuner GUI
+            # (`longitudinal_test tune`)
+            'longitudinal_test = nift_control.utils.longitudinal_test:main',
+        ],
     },
 )

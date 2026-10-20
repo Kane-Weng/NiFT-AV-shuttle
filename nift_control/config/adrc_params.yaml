@@ -1,0 +1,11 @@
+# ADRC and vehicle bridge parameters.
+# Used by trajectory_controller (production); longitudinal_test (adrc, tune) reads the same values as its defaults.
+
+trajectory_controller:
+  ros__parameters:
+    adrc:
+      b0: 0.5       # System gain: how powerfully throttle affects speed
+      w_cl: 2.0     # Controller bandwidth: how aggressively it chases the target (~4/w_cl sec settle)
+      k_eso: 5.0    # Observer bandwidth ratio: how much faster the ESO runs vs the controller
+    vehicle_bridge:
+      zero_speed_tolerance: 0.1  # m/s — speed below which the vehicle is considered stopped

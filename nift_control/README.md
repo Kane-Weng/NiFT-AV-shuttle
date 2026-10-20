@@ -1,61 +1,75 @@
 # nift_control
 
-This package is the control layer of the NiFT autonomy stack. So far only its drive-by-wire interface is published. The trajectory controller, the speed controller and the safety filters will follow.
+`nift_control` is the control layer of the NiFT autonomous shuttle. It takes the planned path, the shuttle's pose and speed and the obstacles in front of it, and turns them into a steering angle, a gear, a brake level and a pedal level. It packs those into the shuttle's drive-by-wire CAN frames and publishes them on `/to_can_bus`. On the shuttle, ros2_socketcan writes them onto the CAN bus. In simulation, the CARLA bridge's virtual ECU decodes the same frames, so the code that runs in simulation is the code that drives the shuttle.
 
-## dbw_interface
+The wiki explains each part in depth: [nift_control](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/nift_control), [trajectory_controller](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/trajectory_controller), [dbw_interface](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/dbw_interface) and [longitudinal_test](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/longitudinal_test).
 
-`dbw_interface` is the only code in the stack that knows the shuttle's CAN wire format. The rest of the stack passes it gear, brake, pedal and steering values, and gets back `can_msgs/Frame` messages that are ready to send.
+## How it fits
 
-### CAN frames
-
-| ID | Length | Purpose | Bytes |
-|---|---|---|---|
-| `0x101` | 5 | Drive command | gear, brake, pedal, steering low byte, steering high byte |
-| `0x100` | 1 | Emergency stop | 1 requests the E-stop, 0 means no E-stop |
-
-- **Gear:** 0 is neutral, 1 is forward, 2 is reverse.
-- **Brake and pedal:** 0 to 255.
-- **Steering:** the angle in degrees times 100, plus 1500, sent low byte first. The angle range is −15° to +15°, so the value runs from 0 to 3000. For example, +5.18° becomes 2018, which goes on the wire as `E2 07`.
-
-The encoder clips inputs that are out of range and logs a warning. If a command asks for pedal and brake at the same time, the brake wins and the pedal is set to 0. An engaged E-stop on the shuttle can only be cleared by cycling its power, so sending 0 on `0x100` does not release it.
-
-The decoders do the reverse. The CARLA simulation uses them in its virtual ECU, so the simulated shuttle reads the same frames as the real one.
-
-### Vehicle bridge
-
-`NiftVehicleBridge` turns the speed controller's output `u` into gear, brake and throttle. `u` runs from −255 to 255. A state machine makes sure the shuttle never changes direction while it is still rolling. "Moving forward" below means a target speed above the zero-speed tolerance of 0.1 m/s, and "stopped" means a measured speed within it.
-
-```mermaid
-stateDiagram-v2
-    [*] --> STANDBY
-    STANDBY --> FORWARD: target forward
-    STANDBY --> REVERSE: target backward
-    FORWARD --> BRAKING_TO_REVERSE: target backward
-    FORWARD --> STANDBY: target zero and stopped
-    BRAKING_TO_REVERSE --> REVERSE: stopped
-    BRAKING_TO_REVERSE --> FORWARD: target forward again
-    BRAKING_TO_REVERSE --> STANDBY: target zero and stopped
-    REVERSE --> BRAKING_TO_FORWARD: target forward
-    REVERSE --> STANDBY: target zero and stopped
-    BRAKING_TO_FORWARD --> FORWARD: stopped
-    BRAKING_TO_FORWARD --> REVERSE: target backward again
-    BRAKING_TO_FORWARD --> STANDBY: target zero and stopped
+```
+waypoint_node ──/planned_path──┐
+shuttle_tf_node ──TF map→base_link──┤
+beacon_node ──/gnss/vel──────────────┼──> trajectory_controller ──/to_can_bus──> CAN bus (or CARLA virtual ECU)
+lidar_node ──/obstacles─────────┘
 ```
 
-| State | Gear | Output |
-|---|---|---|
-| `STANDBY` | neutral | brake at least 50 |
-| `FORWARD` | forward | throttle when `u` > 0, otherwise brake |
-| `BRAKING_TO_REVERSE` | forward | brake at least 50 |
-| `REVERSE` | reverse | throttle when `u` < 0, otherwise brake |
-| `BRAKING_TO_FORWARD` | reverse | brake at least 50 |
+`trajectory_controller` runs two timer loops.
 
-Throttle and brake are never both above zero.
+1. **Path loop, 10 Hz.** Pure Pursuit picks a point on the path a few metres ahead and steers toward it. The target speed drops near the goal, with cross-track error and with steering. A safety filter then limits the speed (and, for one filter, the steering) against the obstacles.
+2. **Actuation loop, 20 Hz.** An ADRC speed controller turns the target speed into a control effort. The vehicle bridge, a small state machine, turns that effort into gear, brake and pedal, and never changes direction while the shuttle rolls. The CAN encoder checks the values and packs the `0x101` frame.
+
+The node has five modes: `IDLE`, `AUTONOMOUS` (follow the path), `MANUAL` (speed and steering from `/teleop_cmd_vel`, through ADRC), `SAFE_STOP` (neutral and full brake until `/resume`) and `ESTOP` (sends the hardware E-stop frame). Watchdogs move it to `SAFE_STOP` when GNSS or the localization goes stale, when perception goes silent, or when an obstacle comes inside the collision zone.
+
+## Contents
+
+| Path | What it is |
+|---|---|
+| `nift_control/trajectory_controller.py` | The node: ROS wiring, watchdogs, services, diagnostics |
+| `nift_control/modes/` | One handler per mode; the node delegates both loops to the active one |
+| `nift_control/controllers/` | Lateral controllers (Pure Pursuit, Stanley) and longitudinal controllers (ADRC, PID) |
+| `nift_control/filters/` | Safety filters: `distance_stop`, `cbf` (default), `potential_field`, `none` |
+| `nift_control/dbw_interface/` | CAN frame builders and the vehicle bridge state machine. The wire format itself lives in `nift_common.can_protocol` |
+| `nift_control/utils/` | `longitudinal_test`: guarded test passes on the shuttle, plus a tuner GUI and a live monitor |
+| `config/planning.yaml` | Path following and safety filter parameters |
+| `config/adrc_params.yaml` | ADRC gains and the bridge's zero-speed tolerance |
+| `config/garage_pad.yaml` | Example test pad for the `longitudinal_test monitor` map |
+
+## Running
+
+The controller is normally started by the system launch in `nift_bringup`, which loads both config files and sets `filter_type`, `lateral_enabled` and `localization_source` from the chosen profile. To run it on its own:
+
+```bash
+ros2 run nift_control trajectory_controller --ros-args \
+  --params-file $(ros2 pkg prefix nift_control)/share/nift_control/config/planning.yaml \
+  --params-file $(ros2 pkg prefix nift_control)/share/nift_control/config/adrc_params.yaml
+```
+
+Then drive it through its services, which all use `std_srvs/Trigger`.
+
+```bash
+ros2 service call /start_navigation std_srvs/srv/Trigger     # IDLE -> AUTONOMOUS (needs a path, fresh GNSS and obstacles)
+ros2 service call /toggle_manual_mode std_srvs/srv/Trigger   # IDLE or AUTONOMOUS <-> MANUAL
+ros2 service call /trigger_estop std_srvs/srv/Trigger        # -> SAFE_STOP (brake hold, not the hardware E-stop)
+ros2 service call /resume std_srvs/srv/Trigger               # SAFE_STOP -> IDLE
+```
+
+`longitudinal_test` runs scripted passes on the real shuttle to measure its speed and steering response, for example `ros2 run nift_control longitudinal_test adrc --speed 1.0`. Never run it next to `trajectory_controller`, because both publish `/to_can_bus`. See the [longitudinal_test](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/longitudinal_test) wiki page for the tests and their guards.
 
 ## Tests
 
 ```bash
+colcon build --packages-up-to nift_control
 colcon test --packages-select nift_control && colcon test-result --verbose
 ```
 
-`test/test_can_interface.py` pins the wire format to fixed expected bytes. It also checks that every gear, brake and pedal value survives an encode and decode round trip, and it sweeps the full steering range. The flake8 and pep257 style checks run too.
+| Test | What it covers |
+|---|---|
+| `test_can_interface.py` | The CAN wire format: golden bytes, round trips, steering rounding and limits, brake priority, malformed frames |
+| `test_localization_source.py` | The controller node itself: the GNSS and localization watchdogs, the DEGRADED speed cap, start and MANUAL refusals, which steering `SAFE_STOP` holds |
+| `test_steer_util.py` | The steering sequence parser, the predicted turn while stopping, and how the `0x301` acknowledgement follows a command |
+| `test_longitudinal_ack.py` | `longitudinal_test` decodes the `0x301` acknowledgement with the shared steering decoder |
+| `test_flake8.py`, `test_pep257.py` | Code and docstring style |
+
+## License
+
+Apache-2.0. Maintainer: Kane Weng.
