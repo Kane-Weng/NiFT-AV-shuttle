@@ -16,7 +16,7 @@ from can_msgs.msg import Frame
 SERVICES = {
     'start': '/start_navigation',
     'estop': '/trigger_estop',
-    'stop': '/trigger_estop',
+    'stop': '/safe_stop',
     'resume': '/resume',
     'manual': '/toggle_manual_mode',
     'power_cycle': '/carla/dbw_power_cycle',

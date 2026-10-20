@@ -57,8 +57,8 @@ jobs:
       matrix:
         python: ['3.10', '3.12']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install
@@ -74,11 +74,11 @@ jobs:
       run:
         working-directory: nift_playground/tests/pyodide
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.18'   # 22.18 or newer runs core.ts with built-in type stripping
       - name: Install
@@ -87,7 +87,7 @@ jobs:
           npm ci --no-audit --no-fund
       # Pyodide downloads the numpy and pyyaml wheels on first use and keeps them in node_modules/pyodide.
       - name: Cache Pyodide packages
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             nift_playground/tests/pyodide/node_modules/pyodide/numpy-*.whl
@@ -99,7 +99,7 @@ jobs:
         run: node run_compare.mjs --json compare.json
       - name: Perf and memory
         run: node perf.mjs --json perf.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: pyodide-compare
@@ -114,11 +114,11 @@ jobs:
       run:
         working-directory: nift_playground/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.18'
           cache: npm
@@ -146,11 +146,11 @@ jobs:
       run:
         working-directory: nift_playground/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.18'
           cache: npm
@@ -163,7 +163,7 @@ jobs:
         run: npm run e2e -- --no-build --out e2e_out
       - name: Smoke test with the Pyodide worker
         run: npm run smoke -- --sim pyodide --out smoke_out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: e2e-screenshots

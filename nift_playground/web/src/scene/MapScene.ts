@@ -629,25 +629,21 @@ export class MapScene {
   }
 
   /**
-   * Map point under a canvas pixel, on the ground: the plane z = 0, or the world's ground when
-   * it is shown (the ray meets the height grid after a few fixed-point steps; top-down is exact).
+   * Map point under a canvas pixel, on the ground. That is the plane z = 0, or the world's ground
+   * when it is shown. Buildings, bridges and trees are ignored, so a click behind them still
+   * lands on the ground there.
    */
   pick(clientX: number, clientY: number): XY | null {
     const r = this.canvas.getBoundingClientRect()
     const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     const ray = new THREE.Raycaster()
     ray.setFromCamera(ndc, this.camera())
-    const hit = new THREE.Vector3()
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
-    if (!ray.ray.intersectPlane(plane, hit)) return null
-    if (this.worldOn) {
-      for (let i = 0; i < 8; i++) {
-        plane.constant = -(this.groundAt(hit.x, hit.y) + this.lift())
-        const prev = hit.clone()
-        if (!ray.ray.intersectPlane(plane, hit)) return null
-        if (hit.distanceToSquared(prev) < 1e-4) break
-      }
+    if (this.worldOn && this.world) {
+      const hit = this.world.height.rayHit(ray.ray.origin, ray.ray.direction, this.lift())
+      return hit ? [hit.x, hit.y] : null
     }
+    const hit = new THREE.Vector3()
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) return null
     return [hit.x, hit.y]
   }
 

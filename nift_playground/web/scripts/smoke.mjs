@@ -273,21 +273,24 @@ async function worldChecks(page, url) {
     const dx = ahead[0] - p.x
     const dy = ahead[1] - p.y
     const n = Math.hypot(dx, dy) || 1
-    return { eye: [p.x - (14 * dx) / n, p.y - (14 * dy) / n, 7], target: [ahead[0], ahead[1], 0] }
+    return { k, eye: [p.x - (14 * dx) / n, p.y - (14 * dy) / n, 7], target: [ahead[0], ahead[1], 0] }
   })
   await page.evaluate((v) => window.__playground.scene.setView(v.eye, v.target), view)
   await sleep(800)
   out.fpsWorld3d = await fps()
   await shotW('world_3d_route_dark.png')
-  // pick in 3D: project a path point, pick the pixel back
-  const p3 = await page.evaluate(() => {
+  // pick in 3D: project two path points the camera looks along, pick the pixels back. A point far
+  // down the route can sit behind a rise of the site, where no pick on the ground can reach it.
+  const p3 = await page.evaluate((ks) => {
     const path = window.__playground.client.snapshot.path
     const s = window.__playground.scene
-    const t = path[Math.floor(path.length * 0.6)]
-    const px = s.project(t[0], t[1])
-    return { t, got: s.pick(px.x, px.y) }
-  })
-  out.pickErr3dM = +Math.hypot(p3.got[0] - p3.t[0], p3.got[1] - p3.t[1]).toFixed(3)
+    return ks.map((k) => {
+      const t = path[Math.min(path.length - 1, k)]
+      const px = s.project(t[0], t[1])
+      return { t, got: s.pick(px.x, px.y) }
+    })
+  }, [view.k + 20, view.k + 40])
+  out.pickErr3dM = +Math.max(...p3.map((p) => (p.got ? Math.hypot(p.got[0] - p.t[0], p.got[1] - p.t[1]) : Infinity))).toFixed(3)
   if (out.pickErr3dM > 0.5) fail(`3D pick on the world is off by ${out.pickErr3dM} m`)
   await page.click('[data-testid="theme-toggle"]')
   await sleep(500)

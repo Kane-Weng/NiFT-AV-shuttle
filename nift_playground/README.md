@@ -5,7 +5,7 @@ The NiFT shuttle's own ROS 2 nodes, running in a web page. The page loads Python
 The wiki page [Web Playground](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/Web-Playground) explains the idea and the design with diagrams. The contract every part is built against is [ARCH.md](ARCH.md).
 
 > [!NOTE]
-> This folder isn't a ROS package. It has a `COLCON_IGNORE`, so `colcon build` skips it. The playground is part of port unit U11 and isn't hosted yet.
+> This folder isn't a ROS package. It has a `COLCON_IGNORE`, so `colcon build` skips it. The page is live at [kane-weng.github.io/nift_playground](https://kane-weng.github.io/nift_playground/).
 
 ## What runs
 
@@ -100,17 +100,16 @@ A run takes a few seconds. The exit code is 0 when the shuttle arrived. `--out` 
 | Worker in a browser | `node browser_smoke.mjs` (same folder, after `npm ci` in `web/`) | the worker alone in headless Chrome, boots Pyodide from the CDN, drives route 04. Needs network |
 | Page | `cd nift_playground/web && npx tsc --noEmit && npm test` | type check and unit tests |
 | Page smoke | `npm run build && npm run smoke` (in `web/`) | headless Chrome clicks through every panel against the mock worker, then turns on the 3D world and takes top-down and 3D screenshots of it |
-| Page end to end | `npm run e2e` (in `web/`) | builds the page and drives the real stack in headless Chrome through its own buttons. Boot, route 04 to arrival, a GNSS dropout to SAFE_STOP and Resume, E-STOP, pause and step, presets, reset. Needs network |
+| Page end to end | `npm run e2e` (in `web/`) | builds the page and drives the real stack in headless Chrome through its own buttons. Boot, route 04 to arrival, a GNSS dropout to SAFE_STOP and Resume, Stop and Resume, E-STOP and Reset, pause and step, presets, reset. Needs network |
 | Lanelet2 against the real one | `python3 nift_playground/tests/lanelet2/compare_real.py` | needs Docker and the `nift_pub_deps:humble` image. Refreshes the fixtures the native suite uses |
 
-`ci/playground.yml` is the proposed CI workflow (native on 3.10 and 3.12, Node + Pyodide, page build). It runs once it is moved to `.github/workflows/`.
+GitHub runs most of these checks in `.github/workflows/playground.yml` on every push that touches the playground, the packages it loads or the map. That covers the native suite on 3.10 and 3.12, Node + Pyodide, the page build, and the page end to end and smoke in headless Chrome. `.github/workflows/deploy-playground.yml` builds the page and publishes it to GitHub Pages.
 
 ## Layout
 
 ```
 nift_playground/
   ARCH.md                the contract: layout, launch set, tick order, worker protocol, bundle
-  ci/playground.yml      proposed CI workflow
   py/
     fakeros/             rclpy, tf2_ros, diagnostic_updater, generated messages (_generated/)
     fakelanelet2/        lanelet2 stand-in, with a node cache for the NiFT map, NOTICE and LICENSES/
@@ -139,7 +138,7 @@ nift_playground/
 - **The tick order is ROS's.** On ROS every node is its own process. When `/clock` reaches a new time, each timer fires on what had already arrived, so the controller acts on the GNSS fix from two ticks earlier. The runner fires all due timers first and delivers afterwards, which gives the same delay (ARCH.md section 7).
 - **Lanelet2 is bit-for-bit.** On the NiFT map and on Lanelet2's example map the stand-in gives the same projections, centerlines, graph links, nearest lanelets and routes as real Lanelet2 1.2.3, including ties. When two lanelets are equally near, Lanelet2's answer depends on the order of its C++ containers. A clean-room module (`lanelet2/_stdorder.py`) reproduces that order from a written specification.
 - **Native and browser agree.** The same scenario in native Python and in Pyodide gives the same messages, with numbers equal to about 3e-9.
-- **Against the real stack.** `tests/reference/` holds runs of the real ROS stack in Docker on the test routes, direct and EKF, plus two GNSS-loss cases. `tests/validation/` drives the same 16 cases and compares them. Every case has the same outcome, status sequence and planned path. Route 02 matches ROS to 0.0 mm over 105 s, and routes 01 to 05 and 11 stay within about 3 cm, which is the spread between repeated ROS runs. In the GNSS-loss cases the position matches within 1 mm and SAFE_STOP comes within 2 ms. The details are in `tests/validation/README.md`.
+- **Against the real stack.** `tests/reference/` holds runs of the real ROS stack in Docker on the test routes, direct and EKF, plus two GNSS-loss cases. `tests/validation/` drives the same 16 cases and compares them. Every case has the same outcome, status sequence and planned path. Route 02 with the EKF matches ROS to 0.0 mm over 105 s, and the other routes stay within a few centimetres, about the spread between repeated ROS runs. The largest is route 05 in direct mode at 10 cm, against the fastest of four ROS runs that differ by up to 6 cm among themselves. In the GNSS-loss cases the position matches within 1 mm and SAFE_STOP comes within 6 ms. The details are in `tests/validation/README.md`.
 - **Even the surprises match.** With the EKF and the realistic GNSS feed, route 04 ends in SAFE_STOP. The real stack does the same, at the same sim time with the same log lines, because the feed model draws an outage longer than the filter can bridge. See `tests/investigations/ekf_realfeed/`.
 
 ## Limits

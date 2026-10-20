@@ -568,7 +568,7 @@ function apply(m: PageToWorker) {
 function command(name: string, id: string | undefined) {
   if (name === 'start') {
     let why = ''
-    if (mode === 'ESTOP') why = 'Cannot start: Vehicle is E-STOPPED. Restart the node to recover.'
+    if (mode === 'ESTOP') why = 'Cannot start: Vehicle is E-STOPPED. Restart this node, then power-cycle the shuttle, to recover.'
     else if (mode === 'SAFE_STOP') why = 'Cannot start: Vehicle is in SAFE STOP. Call /resume first.'
     else if (path.length < 2) why = 'Cannot start: no valid path loaded.'
     else if (fixAge() > STALE_S) why = `Cannot start: no fresh GNSS (${fixAge().toFixed(2)} s).`
@@ -581,19 +581,34 @@ function command(name: string, id: string | undefined) {
     log('info', 'Navigation started.', 'trajectory_controller')
     return reply(id, true, 'Navigation started successfully.')
   }
-  if (name === 'stop' || name === 'estop') {
+  if (name === 'stop') {
+    // /safe_stop
+    if (mode === 'ESTOP') return reply(id, false, 'Cannot safe-stop: Vehicle is E-STOPPED. Restart this node, then power-cycle the shuttle, to recover.')
+    if (mode === 'SAFE_STOP') return reply(id, true, 'Already in SAFE STOP. Call /resume to return to IDLE.')
+    if (mode === 'IDLE') return reply(id, true, 'Already stopped (IDLE).')
     setMode('SAFE_STOP')
-    log('warn', 'SAFE STOP requested (/trigger_estop)', 'trajectory_controller')
+    manual = { v: 0, steer: 0 }
+    log('warn', 'SAFE STOP requested (/safe_stop)', 'trajectory_controller')
     return reply(id, true, 'SAFE STOP engaged. Call /resume to return to IDLE.')
   }
+  if (name === 'estop') {
+    // /trigger_estop: the controller latches ESTOP and sends the 0x100 frame every tick, so the ECU latches too
+    if (mode === 'ESTOP') return reply(id, true, 'Already E-STOPPED. To recover, restart this node, then power-cycle the shuttle.')
+    setMode('ESTOP')
+    manual = { v: 0, steer: 0 }
+    ecuLatched = true
+    log('error', 'E-STOP engaged (/trigger_estop)', 'trajectory_controller')
+    return reply(id, true, 'E-STOP engaged (0x100 sent, brake held). To recover, restart this node, then power-cycle the shuttle.')
+  }
   if (name === 'resume') {
+    if (mode === 'ESTOP') return reply(id, false, 'Cannot resume: Vehicle is E-STOPPED. Restart this node, then power-cycle the shuttle, to recover.')
     if (mode !== 'SAFE_STOP') return reply(id, false, `Not in SAFE_STOP (currently ${mode}); nothing to resume.`)
     setMode('IDLE')
     log('info', 'Resumed from SAFE STOP. Returned to IDLE.', 'trajectory_controller')
     return reply(id, true, 'Resumed. Vehicle returned to IDLE. Call /start_navigation when ready.')
   }
   if (name === 'manual') {
-    if (mode === 'ESTOP') return reply(id, false, 'Cannot switch mode: Vehicle is E-STOPPED. Restart the node to recover.')
+    if (mode === 'ESTOP') return reply(id, false, 'Cannot switch mode: Vehicle is E-STOPPED. Restart this node, then power-cycle the shuttle, to recover.')
     if (mode === 'SAFE_STOP') return reply(id, false, 'Cannot switch mode: Vehicle is in SAFE STOP. Call /resume first.')
     if (mode === 'MANUAL') {
       setMode('IDLE')
@@ -613,8 +628,9 @@ function command(name: string, id: string | undefined) {
   }
   if (name === 'power_cycle') {
     const was = ecuLatched
-    ecuLatched = false
-    log('info', `ECU power cycled${was ? ', E-stop latch cleared' : ''}`, 'kinematic_sim')
+    // an E-stopped controller keeps sending the 0x100 frame, so the ECU latches again at once
+    ecuLatched = mode === 'ESTOP'
+    log('info', `ECU power cycled${was ? ', E-stop latch cleared' : ''}${ecuLatched ? ', latched again by the E-stopped controller' : ''}`, 'kinematic_sim')
     return reply(id, true, was ? 'mock: power cycled, E-stop latch cleared' : 'mock: power cycled')
   }
   return reply(id, false, `${name} is not in the mock`)

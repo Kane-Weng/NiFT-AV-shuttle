@@ -21,7 +21,7 @@ jobs:
 
     steps:
       # The repo is a workspace's src/ directory, so check it out as one.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: src
 

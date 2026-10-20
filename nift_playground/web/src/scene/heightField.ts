@@ -28,11 +28,65 @@ export async function gunzipMaybe(buf: ArrayBuffer): Promise<ArrayBuffer> {
   return new Response(stream).arrayBuffer()
 }
 
+export type Vec3 = { x: number; y: number; z: number }
+
 export class HeightField {
+  private stats: { lo: number; hi: number; slope: number } | null = null
+
   constructor(
     readonly meta: HeightMeta,
     readonly z: Float32Array,
   ) {}
+
+  /** Lowest and highest grid height, and the steepest slope of the bilinear ground (rise per metre). */
+  shape(): { lo: number; hi: number; slope: number } {
+    if (!this.stats) {
+      const { nx, ny, cell } = this.meta
+      const z = this.z
+      let lo = Infinity
+      let hi = -Infinity
+      let slope = 0
+      for (let j = 0; j < ny; j++) {
+        for (let i = 0; i < nx; i++) {
+          const k = j * nx + i
+          lo = Math.min(lo, z[k])
+          hi = Math.max(hi, z[k])
+          if (i + 1 < nx && j + 1 < ny) {
+            const gx = Math.max(Math.abs(z[k + 1] - z[k]), Math.abs(z[k + nx + 1] - z[k + nx]))
+            const gy = Math.max(Math.abs(z[k + nx] - z[k]), Math.abs(z[k + nx + 1] - z[k + 1]))
+            slope = Math.max(slope, Math.hypot(gx, gy) / cell)
+          }
+        }
+      }
+      this.stats = { lo, hi, slope }
+    }
+    return this.stats
+  }
+
+  /**
+   * First point where a ray meets the ground raised by lift, or null when it misses (it points
+   * up, starts below the ground or leaves the height band). Only the height grid counts, so
+   * buildings, bridges and trees never catch a click.
+   *
+   * The walk can't step over the ground. Each step is the ray's height above the ground divided
+   * by the fastest that height can shrink (the ray's own descent plus the steepest slope). So a
+   * ray that only grazes a crest still stops there, within 0.1 mm of the ground.
+   */
+  rayHit(o: Vec3, d: Vec3, lift = 0): Vec3 | null {
+    if (d.z >= 0) return null
+    const { lo, hi, slope } = this.shape()
+    const above = (t: number) => o.z + t * d.z - (this.at(o.x + t * d.x, o.y + t * d.y) + lift)
+    const rate = -d.z + slope * Math.hypot(d.x, d.y)
+    const tEnd = (lo + lift - 0.01 - o.z) / d.z
+    let t = Math.max(0, (hi + lift + 0.01 - o.z) / d.z)
+    if (above(t) < 0) return null // the eye is under the ground
+    for (let n = 0; n < 200000 && t <= tEnd; n++) {
+      const a = above(t)
+      if (a <= 1e-4) return { x: o.x + t * d.x, y: o.y + t * d.y, z: o.z + t * d.z }
+      t += a / rate
+    }
+    return null
+  }
 
   /** Builds the field from the inflated file contents. */
   static fromDeltas(meta: HeightMeta, raw: ArrayBuffer): HeightField {

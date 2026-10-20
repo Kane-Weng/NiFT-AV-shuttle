@@ -112,4 +112,51 @@ describe('height grid', () => {
     const zs = map.lanelets.flatMap((l) => l.centerline.map(([x, y]) => field.at(x, y))).sort((a, b) => a - b)
     expect(Math.abs(zs[Math.floor(zs.length / 2)])).toBeLessThan(1.0)
   })
+
+  it('finds the ground under a click, even from a low camera on the slope', () => {
+    // A chase view like the smoke test's: the eye 7 m above a lane, a lane point 30 to 150 m ahead.
+    // The old fixed-point search missed by more than 0.5 m on about one in seven of these shallow rays.
+    const text = readFileSync(path.resolve(__dirname, '../../../maps', MAP_FILE), 'utf8')
+    const map = buildLaneletMap(parseOsm(text), new MapProjector(MAP_ORIGIN_LAT, MAP_ORIGIN_LON))
+    const pts = map.lanelets.flatMap((l) => l.centerline)
+    const lift = 0.06
+    const ground = (x: number, y: number) => field.at(x, y) + lift
+    let seed = 7
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+    let checked = 0
+    let onTarget = 0
+    for (let n = 0; n < 4000 && checked < 300; n++) {
+      const [px, py] = pts[Math.floor(rand() * pts.length)]
+      const [qx, qy] = pts[Math.floor(rand() * pts.length)]
+      const dist = Math.hypot(qx - px, qy - py)
+      if (dist < 30 || dist > 150) continue
+      const o = { x: px, y: py, z: ground(px, py) + 7 }
+      const q = { x: qx, y: qy, z: ground(qx, qy) }
+      const d = { x: q.x - o.x, y: q.y - o.y, z: q.z - o.z }
+      const hit = field.rayHit(o, d, lift)
+      const label = `ray from (${px.toFixed(1)}, ${py.toFixed(1)}) to (${qx.toFixed(1)}, ${qy.toFixed(1)})`
+      expect(hit, label).not.toBeNull()
+      // the hit is on the ground, and no part of the ray before it is under the ground (1 cm steps)
+      expect(Math.abs(hit!.z - ground(hit!.x, hit!.y)), label).toBeLessThan(2e-4)
+      const sHit = (hit!.z - o.z) / d.z
+      let lowest = Infinity
+      for (let s = 0; s < sHit; s += 0.01 / Math.hypot(d.x, d.y)) lowest = Math.min(lowest, o.z + s * d.z - ground(o.x + s * d.x, o.y + s * d.y))
+      expect(lowest, label).toBeGreaterThan(-1e-6)
+      // the target is on the ground too, so the hit is the target unless the terrain hides it
+      if (Math.hypot(hit!.x - q.x, hit!.y - q.y) < 0.5) onTarget++
+      checked++
+    }
+    expect(checked).toBe(300)
+    expect(onTarget).toBeGreaterThan(250)
+    // a ray that only grazes a crest at the target, which a fixed step jumped over to land 2.5 m behind it
+    const o = { x: 102.8, y: 176.9, z: ground(102.8, 176.9) + 7 }
+    const q = { x: -0.1, y: 120.2, z: ground(-0.1, 120.2) }
+    const graze = field.rayHit(o, { x: q.x - o.x, y: q.y - o.y, z: q.z - o.z }, lift)
+    expect(Math.hypot(graze!.x - q.x, graze!.y - q.y)).toBeLessThan(0.5)
+    // straight down is exact, and a ray that points up misses
+    const top = field.rayHit({ x: 10, y: 20, z: 500 }, { x: 0, y: 0, z: -1 }, lift)
+    expect(top!.x).toBe(10)
+    expect(top!.z).toBeCloseTo(ground(10, 20), 4)
+    expect(field.rayHit({ x: 10, y: 20, z: 5 }, { x: 1, y: 0, z: 0.1 }, lift)).toBeNull()
+  })
 })

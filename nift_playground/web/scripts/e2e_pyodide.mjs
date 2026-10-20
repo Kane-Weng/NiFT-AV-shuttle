@@ -11,7 +11,7 @@
 //        the arrival (NAVIGATING then IDLE). The shuttle must have followed the planned path.
 //     3. GNSS dropout: on route 04 again, a 3 s dropout while navigating ends in SAFE_STOP; Resume
 //        goes back to IDLE, and Start drives on to the goal.
-//     4. E-STOP and Stop (both SAFE_STOP), Resume; pause and step n; set_param refusals; the GNSS
+//     4. Stop (SAFE_STOP) and Resume, E-STOP (latches, Resume disabled); pause and step n; set_param refusals; the GNSS
 //        fault presets (one flat list with kind); Reset.
 //
 //   Screenshots (dark and light, while driving) go to --out. Pyodide comes from the jsDelivr CDN, so
@@ -310,21 +310,30 @@ try {
   result.gnss_dropout = `dropout 3 s at t ${tFault.toFixed(1)} s -> SAFE_STOP at ${tStop.toFixed(1)} s -> Resume -> IDLE -> Start -> arrived`
   log(result.gnss_dropout)
 
-  // ------------------------------------------------------------------ 4. E-STOP, Stop, refusals, reset
+  // ------------------------------------------------------------------ 4. Stop, E-STOP, refusals, reset
   await run(1)
   await loadRouteAndGoal()
-  for (const b of ['cmd-estop', 'cmd-stop']) {
-    await click('cmd-start')
-    await until(async () => (await status()) === 'NAVIGATING', `NAVIGATING before ${b}`, 15000)
-    await sleep(1500)
-    await click(b)
-    await until(async () => (await status()) === 'SAFE_STOP', `SAFE_STOP after ${b}`, 15000)
-    await until(async () => (await st()).speed < 0.05, `the stop after ${b}`, 30000)
-    await click('cmd-resume')
-    await until(async () => (await status()) === 'IDLE', `IDLE after Resume (${b})`, 10000)
-  }
-  if (!(await text('[data-testid="last-reply"]')).length) fail('no command reply shown')
-  result.estop_stop = 'E-STOP and Stop: SAFE_STOP, Resume -> IDLE'
+  // Stop is /safe_stop: SAFE_STOP, and Resume goes back to IDLE
+  await click('cmd-start')
+  await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING before Stop', 15000)
+  await sleep(1500)
+  await click('cmd-stop')
+  await until(async () => (await status()) === 'SAFE_STOP', 'SAFE_STOP after Stop', 15000)
+  await until(async () => (await st()).speed < 0.05, 'the stop after Stop', 30000)
+  await click('cmd-resume')
+  await until(async () => (await status()) === 'IDLE', 'IDLE after Resume', 10000)
+  // E-STOP is /trigger_estop: it latches the controller and, through the 0x100 frame, the ECU. Only Reset recovers
+  await click('cmd-start')
+  await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING before E-STOP', 15000)
+  await sleep(1500)
+  await click('cmd-estop')
+  await until(async () => (await status()) === 'ESTOP', 'ESTOP after E-STOP', 15000)
+  await until(async () => (await st()).ecu === 'ESTOP', 'the ECU latched by the E-stop frame', 15000)
+  await until(async () => (await st()).speed < 0.05, 'the stop after E-STOP', 30000)
+  const estopReply = await text('[data-testid="last-reply"]')
+  if (!estopReply.includes('E-STOP engaged')) fail(`E-STOP reply: ${estopReply}`)
+  if (!(await page.$eval('[data-testid="cmd-resume"]', (b) => b.disabled))) fail('Resume is enabled in ESTOP')
+  result.estop_stop = 'Stop: SAFE_STOP, Resume -> IDLE. E-STOP: ESTOP and the ECU latched, Resume disabled'
 
   const refused = await page.evaluate(async () => {
     const c = window.__playground.client
@@ -346,6 +355,7 @@ try {
   const after = await st()
   const opts = (await snap()).readyInfo.launch.options
   if (after.tick > 40) fail(`tick ${after.tick} after reset`)
+  if (after.status === 'ESTOP' || after.ecu === 'ESTOP') fail(`still E-stopped after reset: ${after.status}, ECU ${after.ecu}`)
   if (opts.params?.trajectory_controller?.base_speed !== 2.5) fail(`the staged base_speed did not apply on reset: ${JSON.stringify(opts.params)}`)
   result.reset = `tick ${after.tick} after reset, staged base_speed 2.5 applied`
 

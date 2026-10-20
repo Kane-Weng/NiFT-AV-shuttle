@@ -6,8 +6,9 @@
  *   the same services (ARCH.md 8.1):
  *     - the status from /nav_telemetry STATUS, with the localization and GNSS state beside it
  *     - 2D Goal and 2D Pose Estimate as map tools (click, or drag to give the heading)
- *     - Start Navigation (only in IDLE, like the RViz panel), Stop and E-STOP (both are
- *       /trigger_estop, a SAFE_STOP; the stack has no softer stop), Resume (only from SAFE_STOP)
+ *     - Start Navigation (only in IDLE, like the RViz panel), Stop (/safe_stop, a SAFE_STOP),
+ *       Resume (only from SAFE_STOP) and E-STOP (/trigger_estop, which latches: the controller
+ *       enters ESTOP and sends the 0x100 frame, so only Reset recovers)
  *     - Manual mode (/toggle_manual_mode) and keyboard teleop: click the teleop pad, then
  *       W/A/S/D or the arrows, Space stops. Twist at 10 Hz on /teleop_cmd_vel, linear.x = v and
  *       angular.z = wheel angle, A = wheels left in either gear (as the RViz panel). The first
@@ -138,7 +139,7 @@ export default function OperatorPanel() {
         {status === 'NAVIGATING' ? 'Navigation running' : status === 'MANUAL' ? 'Navigation disabled in manual' : 'Start navigation'}
       </button>
       <div className="grid grid-cols-2 gap-1.5 mb-1.5">
-        <button data-testid="cmd-stop" disabled={!ready} onClick={() => cmd('stop')} className={`${big} bg-slate-500 hover:bg-slate-400 text-white`} title="/trigger_estop: a SAFE_STOP, the same service as E-STOP">
+        <button data-testid="cmd-stop" disabled={!ready} onClick={() => cmd('stop')} className={`${big} bg-slate-500 hover:bg-slate-400 text-white`} title="/safe_stop: a SAFE_STOP that Resume clears">
           Stop
         </button>
         <button
@@ -151,7 +152,7 @@ export default function OperatorPanel() {
           Resume
         </button>
       </div>
-      <button data-testid="cmd-estop" disabled={!ready} onClick={() => cmd('estop')} className={`${big} py-2.5 tracking-widest bg-red-600 hover:bg-red-500 active:bg-red-700 text-white`}>
+      <button data-testid="cmd-estop" disabled={!ready} onClick={() => cmd('estop')} className={`${big} py-2.5 tracking-widest bg-red-600 hover:bg-red-500 active:bg-red-700 text-white`} title="/trigger_estop: latches the E-stop in the controller and the ECU. Only Reset recovers">
         E-STOP
       </button>
 
