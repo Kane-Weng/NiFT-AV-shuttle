@@ -23,10 +23,17 @@ Description:
 
   _EstopHandler
   ─────────────
-    - Does nothing in both timer loops.
-    - on_enter immediately publishes a CAN E-stop frame
-    - resets all controllers, and logs at ERROR level
-    - Terminal safe state (only a node restart can clear it)
+    - Entered by /trigger_estop, from any mode.
+    - on_enter resets all controllers, publishes the CAN E-stop frame (0x100,
+      enable 1) and a stop frame (NEUTRAL, full brake), and logs at ERROR level
+    - actuate_loop re-sends both frames every tick, so the E-stop never depends
+      on one frame, and the brake is held even if the ECU missed the E-stop
+    - path_loop publishes telemetry only (keeps the dashboards live)
+    - steering of the stop frame: the same rule as SAFE_STOP (below)
+    - Terminal safe state, a latch like the shuttle's own E-stop. Only a node
+      restart clears it (TrajectoryController._set_mode never leaves ESTOP).
+      The shuttle's latch needs a power cycle. Restart the node first, because
+      a running ESTOP keeps requesting the E-stop.
 
   _AutonomousHandler
   ──────────────────
@@ -46,6 +53,8 @@ Description:
   ──────────────
   path_loop:
     - Safety filter intentionally bypassed (manual is an operator override)
+    - collision-zone check, ahead of the shuttle, and also behind it while it
+      reverses (reverse command or reverse gear)
 
   actuate_loop:
     - routes teleop commands through ADRC and the bridge FSM to CAN.
@@ -56,7 +65,7 @@ Description:
     - steering: 0, or with safe_stop_hold_steering the angle of the last frame
       sent before the stop, held for the whole stop (also at standstill), so
       the shuttle brakes on the arc it was driving. Every SAFE_STOP trigger
-      (watchdogs, collision zone, /trigger_estop) gets the same rule.
+      (watchdogs, collision zone) and ESTOP get the same rule.
 
   Localization DEGRADED (localization_source filter): AUTONOMOUS's target speed
   and MANUAL's commanded speed are capped by node._limit_speed() (a no-op with gnss).
@@ -76,12 +85,34 @@ from nift_common.can_protocol import CAN_CMD_MAX, STEER_MAX_DEG  # full brake, s
 from nift_common.vehicle import ShuttleConfig
 import numpy as np
 
-from ..dbw_interface import create_command_frame, create_estop_frame, Gear
+from ..dbw_interface import create_command_frame, create_estop_frame, Gear, REVERSE_GEAR_STATES
 from ..filters import FilterStatus
 from ..filters.filter_utils import _min_obstacle_distance
 from .mode_base import ControlMode, ControlModeHandler
 
 config = ShuttleConfig()
+
+
+# ─── Stop frames shared by SAFE_STOP and ESTOP ──────────────────────────────── #
+
+def _hold_stop_steering(node) -> None:
+    """
+    Fix the steering of the stop frames on entry to SAFE_STOP or ESTOP.
+
+    0, or with safe_stop_hold_steering the angle of the last frame sent, clipped to full lock.
+    A non-finite last angle holds 0.
+    """
+    held = node._last_steer_deg if node._safe_stop_hold_steering else 0.0
+    node._safe_stop_steer_deg = (float(np.clip(held, -STEER_MAX_DEG, STEER_MAX_DEG))
+                                 if math.isfinite(held) else 0.0)
+    node._last_steer_deg = node._safe_stop_steer_deg
+
+
+def _stop_frame(node, time_msg, label: str):
+    """NEUTRAL, full brake, no pedal, the steering fixed on entry."""
+    return create_command_frame(
+        Gear.NEUTRAL, CAN_CMD_MAX, 0, node._safe_stop_steer_deg, label, time_msg=time_msg,
+    )
 
 
 # ─── Concrete handlers ──────────────────────────────────────────────────────── #
@@ -127,27 +158,39 @@ class _IdleHandler(ControlModeHandler):
 
 class _EstopHandler(ControlModeHandler):
     """
-    Does nothing in both timer loops.
+    Hardware E-stop, latched (/trigger_estop, from any mode).
 
-    - on_enter immediately publishes a CAN E-stop frame
-    - resets all controllers, and logs at ERROR level
-    - Terminal safe state (only a node restart can clear it)
+    - on_enter: resets all controllers, publishes the CAN E-stop frame (0x100, enable 1)
+      and a stop frame, and logs at ERROR level
+    - path_loop: publishes telemetry only (keeps the dashboards live)
+    - actuate_loop: re-sends the E-stop frame and the stop frame every tick, so the
+      E-stop never depends on one frame and the brake is held whatever the ECU does
+    - Terminal safe state (only a node restart can clear it; the shuttle's own latch
+      then needs a power cycle)
     """
 
     def on_enter(self, node, _prev_mode: ControlMode) -> None:
+        node._v_nom = node._delta_nom = 0.0
+        node._v_safe = node._delta_safe = 0.0
+        _hold_stop_steering(node)
         node.longitudinal_ctrl.reset()
         node.bridge.reset()
-        node.can_pub.publish(create_estop_frame(
-            time_msg=node.get_clock().now().to_msg(),
-        ))
+        now = node.get_clock().now().to_msg()
+        node.can_pub.publish(create_estop_frame(True, time_msg=now))
+        node.can_pub.publish(_stop_frame(node, now, 'estop'))
         node._publish_telemetry('ESTOP', 0.0, 0.0, 0.0)
-        node.get_logger().error('E-STOP TRIGGERED! All automatic and manual operations halted.')
+        node.get_logger().error(
+            'E-STOP TRIGGERED! 0x100 E-stop frame sent, brake held. All automatic and manual '
+            'operations halted. To recover, restart this node, then power-cycle the shuttle.')
 
-    def path_loop(self, _node) -> None:
-        pass
+    def path_loop(self, node) -> None:
+        node._publish_telemetry('ESTOP', 0.0, 0.0, 0.0)
 
-    def actuate_loop(self, _node, _dt: float, _now) -> None:
-        pass
+    def actuate_loop(self, node, _dt: float, now) -> None:
+        # Keep requesting the E-stop and holding the brake, so the stop never depends on one frame
+        stamp = now.to_msg()
+        node.can_pub.publish(create_estop_frame(True, time_msg=stamp))
+        node.can_pub.publish(_stop_frame(node, stamp, 'estop'))
 
 
 class _AutonomousHandler(ControlModeHandler):
@@ -285,17 +328,12 @@ class _SafeStopHandler(ControlModeHandler):
     def on_enter(self, node, _prev_mode: ControlMode) -> None:
         node._v_nom = node._delta_nom = 0.0
         node._v_safe = node._delta_safe = 0.0
-        held = node._last_steer_deg if node._safe_stop_hold_steering else 0.0
-        node._safe_stop_steer_deg = (float(np.clip(held, -STEER_MAX_DEG, STEER_MAX_DEG))
-                                     if math.isfinite(held) else 0.0)
-        node._last_steer_deg = node._safe_stop_steer_deg
+        _hold_stop_steering(node)
         node.longitudinal_ctrl.reset()
         node.bridge.reset()
         now = node.get_clock().now().to_msg()
         node._publish_telemetry('SAFE_STOP', 0.0, 0.0, 0.0)
-        node.can_pub.publish(create_command_frame(
-            Gear.NEUTRAL, CAN_CMD_MAX, 0, node._safe_stop_steer_deg, 'safe_stop', time_msg=now,
-        ))
+        node.can_pub.publish(_stop_frame(node, now, 'safe_stop'))
         node.get_logger().warn(
             'SAFE STOP engaged. Vehicle held. Call /resume to return to IDLE.'
             + (f' Steering held at {node._safe_stop_steer_deg:+.2f} deg.'
@@ -307,10 +345,7 @@ class _SafeStopHandler(ControlModeHandler):
 
     def actuate_loop(self, node, _dt: float, now) -> None:
         # Periodically re-assert brakes so vehicle stays stopped even if CAN glitches
-        node.can_pub.publish(create_command_frame(
-            Gear.NEUTRAL, CAN_CMD_MAX, 0, node._safe_stop_steer_deg, 'safe_stop',
-            time_msg=now.to_msg(),
-        ))
+        node.can_pub.publish(_stop_frame(node, now.to_msg(), 'safe_stop'))
 
 
 class _ManualHandler(ControlModeHandler):
@@ -319,6 +354,7 @@ class _ManualHandler(ControlModeHandler):
 
     path_loop:
     - Safety filter intentionally bypassed (manual is an operator override)
+    - collision-zone check ahead, and behind as well while reversing
 
     actuate_loop:
     - routes teleop commands through ADRC and the bridge FSM to CAN.
@@ -337,6 +373,10 @@ class _ManualHandler(ControlModeHandler):
         # Obstacles are stored in map frame, so we need a fresh pose for the check.
         if node._obstacles.size > 0 and node._get_robot_pose():
             edge_dist = _min_obstacle_distance(node.state, node._obstacles)
+            # While reversing (asked to, or rolling back in reverse gear), look behind as well
+            if node._manual_v < 0.0 or node.bridge.state in REVERSE_GEAR_STATES:
+                edge_dist = min(edge_dist, _min_obstacle_distance(
+                    node.state, node._obstacles, behind=True))
             if edge_dist < node._collision_zone_dist:
                 node.get_logger().error(
                     f"[MANUAL] Obstacle within collision zone ({edge_dist:.2f} m "

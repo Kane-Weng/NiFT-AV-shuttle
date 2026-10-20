@@ -27,6 +27,12 @@ Description:
     hard_stop_dist < corridor_clearance
                     < influence_radius      → v_nom * (clearance / influence_radius)
     corridor_clearance <= hard_stop_dist    → 0  (hard stop backstop)
+  The taper is also capped at braking_speed_cap(clearance - hard_stop_dist), the
+  highest speed that still stops before hard_stop_dist at the shuttle's measured
+  braking (filter_utils).
+
+  last_obs_dist is reset to infinity when no obstacle is ahead, so a close reading
+  never outlives its obstacle (it would re-trigger the collision-zone SAFE_STOP).
 
   Status:
     CLEAR           — no obstacle within influence_radius
@@ -41,7 +47,14 @@ import math
 import numpy as np
 
 from .filter_base import FilterStatus, SafetyFilter
-from .filter_utils import _min_corridor_clearance, config, VEHICLE_RADIUS
+from .filter_utils import (
+    _min_corridor_clearance,
+    BRAKE_DECEL_MPS2,
+    BRAKE_DELAY_S,
+    braking_speed_cap,
+    config,
+    VEHICLE_RADIUS,
+)
 
 
 class PotentialFieldAvoidanceFilter(SafetyFilter):
@@ -57,6 +70,8 @@ class PotentialFieldAvoidanceFilter(SafetyFilter):
         influence_radius: float = 10.0,
         max_steer_offset: float = math.radians(15.0),
         hard_stop_dist: float = 2.0,
+        brake_decel: float = BRAKE_DECEL_MPS2,
+        brake_delay: float = BRAKE_DELAY_S,
     ):
         """
         Store the filter parameters.
@@ -69,11 +84,17 @@ class PotentialFieldAvoidanceFilter(SafetyFilter):
             Maximum lateral steering offset added [rad].
         hard_stop_dist
             Corridor clearance [m] below which vehicle hard-stops.
+        brake_decel
+            The shuttle's braking [m/s²] (filter_utils.BRAKE_DECEL_MPS2).
+        brake_delay
+            Time [s] from a brake command to the speed reacting.
 
         """
         self._influence_radius = influence_radius
         self._max_steer_offset = max_steer_offset
         self._hard_stop_dist = hard_stop_dist
+        self._brake_decel = brake_decel
+        self._brake_delay = brake_delay
         self._filter_status = FilterStatus.CLEAR
         self._last_obs_dist = float('inf')
 
@@ -96,6 +117,7 @@ class PotentialFieldAvoidanceFilter(SafetyFilter):
     def filter(self, v_nom, delta_nom, state, obstacles):
         if obstacles.size == 0:
             self._filter_status = FilterStatus.CLEAR
+            self._last_obs_dist = float('inf')     # nothing ahead, so no stale close reading
             return v_nom, delta_nom
 
         vehicle_pos = np.array([state.x, state.y])
@@ -106,6 +128,7 @@ class PotentialFieldAvoidanceFilter(SafetyFilter):
         front_mask = np.dot(vecs_to_obs, heading_vec) > 0
         if not np.any(front_mask):
             self._filter_status = FilterStatus.CLEAR
+            self._last_obs_dist = float('inf')
             return v_nom, delta_nom
 
         valid_vecs = vecs_to_obs[front_mask]
@@ -120,16 +143,19 @@ class PotentialFieldAvoidanceFilter(SafetyFilter):
 
         # ---- Speed: corridor-aware taper and hard stop ---- #
         corridor_clearance = _min_corridor_clearance(state, obstacles)
+        # Never faster than the shuttle can still stop from before hard_stop_dist
+        brake_cap = braking_speed_cap(
+            corridor_clearance - self._hard_stop_dist, self._brake_decel, self._brake_delay)
         if corridor_clearance <= self._hard_stop_dist:
             v_safe = 0.0
             self._filter_status = FilterStatus.BLOCKED
         elif corridor_clearance < self._influence_radius:
             speed_scale = min(1.0, corridor_clearance / self._influence_radius)
-            v_safe = float(v_nom * speed_scale)
+            v_safe = float(min(v_nom * speed_scale, brake_cap))
             self._filter_status = FilterStatus.OBJECT_DETECTED
         else:
             # Obstacle is in range for steering but outside corridor — no speed penalty
-            v_safe = v_nom
+            v_safe = float(min(v_nom, brake_cap))
             self._filter_status = FilterStatus.OBJECT_DETECTED
 
         # ---- Steering: repulsive lateral offset ---- #

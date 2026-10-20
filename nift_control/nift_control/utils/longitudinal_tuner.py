@@ -48,7 +48,6 @@ from ..dbw_interface import (
     create_estop_frame,
     Gear,
     NiftVehicleBridge,
-    VehicleMode,
 )
 
 CONTROL_HZ = 20
@@ -116,9 +115,7 @@ class LongitudinalTuner(Node):
 
     def _on_vel(self, msg: TwistStamped):
         speed = msg.twist.linear.x
-        self.current_speed = (
-            -abs(speed) if self.bridge.state == VehicleMode.REVERSE else abs(speed)
-        )
+        self.current_speed = self.bridge.signed_speed(speed)   # negative in reverse gear
         self._speed_str.set(f"{speed:.2f}")
         self._draw_speed_needle(speed)
 

@@ -11,7 +11,11 @@
  * Key Features:
  * - Qt/ROS Integration: GUI updates via QMetaObject::invokeMethod to prevent
  *   cross-thread crashes when receiving ROS telemetry messages.
- * - Service Clients: start_navigation, toggle_manual_mode, trigger_estop.
+ * - Service Clients: start_navigation, toggle_manual_mode, safe_stop, trigger_estop,
+ *   resume. Each reply (success, or why it was refused) is shown on the reply line.
+ * - Mode from /nav_telemetry's STATUS line, parsed as "STATUS: value": SAFE_STOP shows
+ *   Resume, ESTOP freezes everything but E-STOP. Both views end when telemetry stops
+ *   for 2 s (the controller was restarted or is gone), so the panel never stays frozen.
  * - Keyboard Teleop: Click-to-focus QFrame captures WASD/arrow keys and
  *   publishes Twist at 10 Hz to /teleop_cmd_vel. Auto-enables MANUAL mode
  *   on first keypress if not already active.
@@ -34,6 +38,7 @@
 #include <rviz_common/view_manager.hpp>
 #include <QKeyEvent>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QVector>
 #include <QPair>
 #include <algorithm>
@@ -56,6 +61,23 @@ QString buttonStyle(const QString & bg, const QString & fg = "white")
 // sheet made it look clickable.
 const QString kDimWhenDisabled =
   "QPushButton:disabled { background-color: #4d5656; color: #95a5a6; }";
+
+// trajectory_controller publishes /nav_telemetry at 10 Hz in SAFE_STOP and ESTOP. Silence this long
+// means it was restarted (it starts in IDLE and sends nothing) or is gone.
+const qint64 kStaleTelemetryMs = 2000;
+
+// The STATUS value of a /nav_telemetry text ("STATUS:    SAFE_STOP" -> "SAFE_STOP"), "" if none.
+// Splits each line at its first colon and trims, so the spacing of the line doesn't matter.
+QString statusOf(const QString & text)
+{
+  for (const QString & line : text.split('\n', Qt::SkipEmptyParts)) {
+    const int colon = line.indexOf(':');
+    if (colon > 0 && line.left(colon).trimmed() == "STATUS") {
+      return line.mid(colon + 1).trimmed();
+    }
+  }
+  return QString();
+}
 
 // Camera buttons: neutral, lighter than the vehicle controls above them.
 const QString kViewButtonStyle =
@@ -130,16 +152,25 @@ NavPanel::NavPanel(QWidget * parent)
   start_button_->setStyleSheet(buttonStyle("#4e2ecc"));
   layout->addWidget(start_button_);
 
-  // ── Row 2: Manual toggle + E-STOP side by side ────────────────────────── //
+  // ── Row 2: Manual toggle + Stop + E-STOP side by side ─────────────────── //
   QHBoxLayout * ctrl_row = new QHBoxLayout;
 
   manual_button_ = new QPushButton("Enable Manual →");
   manual_button_->setStyleSheet(buttonStyle("#27ae60") + kDimWhenDisabled);
 
+  // Stop: the soft stop (/safe_stop -> SAFE_STOP, then Resume). E-STOP latches until a restart
+  stop_button_ = new QPushButton("■  Stop");
+  stop_button_->setStyleSheet(buttonStyle("#5d6d7e") + kDimWhenDisabled);
+  stop_button_->setToolTip("Safe stop: brake and hold, then Resume (/safe_stop)");
+
   estop_button_ = new QPushButton("⚠  E-STOP");
   estop_button_->setStyleSheet(buttonStyle("#c0392b"));
+  estop_button_->setToolTip(
+    "Hardware E-stop, latched: restart the controller, then power-cycle the shuttle "
+    "(/trigger_estop)");
 
   ctrl_row->addWidget(manual_button_);
+  ctrl_row->addWidget(stop_button_);
   ctrl_row->addWidget(estop_button_);
   layout->addLayout(ctrl_row);
 
@@ -148,6 +179,13 @@ NavPanel::NavPanel(QWidget * parent)
   resume_button_->setStyleSheet(buttonStyle("#d97706"));
   resume_button_->setVisible(false);
   layout->addWidget(resume_button_);
+
+  // ── Row 2c: the last service reply (hidden until the first one) ──────── //
+  reply_label_ = new QLabel;
+  reply_label_->setTextFormat(Qt::PlainText);
+  reply_label_->setWordWrap(true);
+  reply_label_->setVisible(false);
+  layout->addWidget(reply_label_);
 
   // ── Row 3: Telemetry display (two-column table, see telemetryHtml) ───── //
   telemetry_label_ = new QLabel("Waiting for telemetry...");
@@ -237,6 +275,7 @@ NavPanel::NavPanel(QWidget * parent)
   // ── Signal connections ────────────────────────────────────────────────── //
   connect(start_button_, SIGNAL(clicked()), this, SLOT(onStartButtonClicked()));
   connect(manual_button_, SIGNAL(clicked()), this, SLOT(onManualButtonClicked()));
+  connect(stop_button_, SIGNAL(clicked()), this, SLOT(onStopButtonClicked()));
   connect(estop_button_, SIGNAL(clicked()), this, SLOT(onEstopButtonClicked()));
   connect(resume_button_, SIGNAL(clicked()), this, SLOT(onResumeButtonClicked()));
 
@@ -244,6 +283,7 @@ NavPanel::NavPanel(QWidget * parent)
   node_ = rclcpp::Node::make_shared("rviz_nav_panel_node");
   nav_client_ = node_->create_client<std_srvs::srv::Trigger>("/start_navigation");
   manual_client_ = node_->create_client<std_srvs::srv::Trigger>("/toggle_manual_mode");
+  safe_stop_client_ = node_->create_client<std_srvs::srv::Trigger>("/safe_stop");
   estop_client_ = node_->create_client<std_srvs::srv::Trigger>("/trigger_estop");
   resume_client_ = node_->create_client<std_srvs::srv::Trigger>("/resume");
   teleop_pub_ = node_->create_publisher<geometry_msgs::msg::Twist>("/teleop_cmd_vel", 10);
@@ -264,6 +304,11 @@ NavPanel::NavPanel(QWidget * parent)
     });
   spin_timer->start(50);
 
+  // ── Telemetry age: leaves a stop view when the controller goes silent ─── //
+  QTimer * age_timer = new QTimer(this);
+  connect(age_timer, &QTimer::timeout, this, &NavPanel::checkTelemetryAge);
+  age_timer->start(500);
+
   // ── Teleop publish timer (started/stopped with zone focus) ───────────── //
   teleop_timer_ = new QTimer(this);
   connect(teleop_timer_, &QTimer::timeout, this, &NavPanel::publishTeleop);
@@ -283,46 +328,120 @@ void NavPanel::telemetryCallback(const std_msgs::msg::String::SharedPtr msg)
     Qt::QueuedConnection, Q_ARG(QString, telemetryHtml(text)));
 
   // Mode detection reads the raw message, not the formatted label text
-  bool is_manual = text.contains("STATUS:    MANUAL");
-  bool is_idle = text.contains("STATUS:    IDLE");
-  bool is_safe_stop = text.contains("STATUS:    SAFE_STOP");
-
+  const QString status = statusOf(text);
   QMetaObject::invokeMethod(
-    this, [this, is_manual, is_idle, is_safe_stop]() {
-      is_manual_mode_ = is_manual;
-      is_safe_stop_ = is_safe_stop;
-
-      // ── SAFE_STOP: show resume, freeze other controls ─────────────────── //
-      if (is_safe_stop) {
-        resume_button_->setVisible(true);
-        start_button_->setText("Vehicle in Safe Stop");
-        start_button_->setStyleSheet(buttonStyle("#78350f", "#fbbf24"));
-        start_button_->setEnabled(false);
-        manual_button_->setEnabled(false);
-        return;
-      }
-
-      resume_button_->setVisible(false);
-      manual_button_->setEnabled(true);
-
-      if (is_manual) {
-        manual_button_->setText("← Disable Manual");
-        manual_button_->setStyleSheet(buttonStyle("#e67e22") + kDimWhenDisabled);
-
-        start_button_->setText("Navigation Disabled in Manual Mode");
-        start_button_->setStyleSheet(buttonStyle("#3498db"));
-        start_button_->setEnabled(false);
-      } else {
-        manual_button_->setText("Enable Manual →");
-        manual_button_->setStyleSheet(buttonStyle("#27ae60") + kDimWhenDisabled);
-      }
-
-      if (is_idle) {
-        start_button_->setText("Start Navigation");
-        start_button_->setStyleSheet(buttonStyle("#4e2ecc"));
-        start_button_->setEnabled(true);
-      }
+    this, [this, status]() {
+      telemetry_age_.restart();
+      applyStatus(status);
     }, Qt::QueuedConnection);
+}
+
+void NavPanel::applyStatus(const QString & status)
+{
+  is_manual_mode_ = status == "MANUAL";
+  is_safe_stop_ = status == "SAFE_STOP";
+  is_estop_ = status == "ESTOP";
+
+  // ── ESTOP: latched. Everything but E-STOP frozen; Resume would be refused ── //
+  if (is_estop_) {
+    resume_button_->setVisible(false);
+    start_button_->setText("E-STOPPED: restart, then power-cycle");
+    start_button_->setStyleSheet(buttonStyle("#7f1d1d", "#ff6b5b"));
+    start_button_->setEnabled(false);
+    manual_button_->setEnabled(false);
+    stop_button_->setEnabled(false);
+    teleop_zone_->setEnabled(false);   // drops its focus: teleop stops with a zero Twist
+    return;
+  }
+  teleop_zone_->setEnabled(true);
+
+  // ── SAFE_STOP: show resume, freeze other controls ─────────────────── //
+  if (is_safe_stop_) {
+    resume_button_->setVisible(true);
+    start_button_->setText("Vehicle in Safe Stop");
+    start_button_->setStyleSheet(buttonStyle("#78350f", "#fbbf24"));
+    start_button_->setEnabled(false);
+    manual_button_->setEnabled(false);
+    stop_button_->setEnabled(false);
+    return;
+  }
+
+  resume_button_->setVisible(false);
+  manual_button_->setEnabled(true);
+  stop_button_->setEnabled(true);
+
+  if (is_manual_mode_) {
+    manual_button_->setText("← Disable Manual");
+    manual_button_->setStyleSheet(buttonStyle("#e67e22") + kDimWhenDisabled);
+
+    start_button_->setText("Navigation Disabled in Manual Mode");
+    start_button_->setStyleSheet(buttonStyle("#3498db"));
+    start_button_->setEnabled(false);
+  } else {
+    manual_button_->setText("Enable Manual →");
+    manual_button_->setStyleSheet(buttonStyle("#27ae60") + kDimWhenDisabled);
+  }
+
+  if (status == "IDLE") {
+    start_button_->setText("Start Navigation");
+    start_button_->setStyleSheet(buttonStyle("#4e2ecc"));
+    start_button_->setEnabled(true);
+  }
+}
+
+void NavPanel::checkTelemetryAge()
+{
+  // A stop view ends only with new telemetry, and a restarted controller sends none in IDLE.
+  // So silence in a stop view means the controller was restarted or is gone: leave the view.
+  if (!(is_safe_stop_ || is_estop_) || !telemetry_age_.isValid() ||
+    telemetry_age_.elapsed() < kStaleTelemetryMs)
+  {
+    return;
+  }
+  const bool was_estop = is_estop_;
+  applyStatus("IDLE");   // a restarted controller starts in IDLE
+  showReply(
+    "/nav_telemetry", false, was_estop ?
+    "No telemetry for 2 s: controller restarted? Power-cycle the shuttle before driving." :
+    "No telemetry for 2 s: controller restarted or gone?");
+}
+
+void NavPanel::showReply(const QString & service, bool ok, const QString & message)
+{
+  reply_label_->setText(QString("%1 %2: %3").arg(ok ? "✔" : "✖", service, message));
+  reply_label_->setStyleSheet(
+    QString(
+      "background-color: #2c3e50; color: %1; padding: 0.25em 0.6em; border-radius: 0.25em;")
+    .arg(ok ? "#2ecc71" : "#fbbf24"));
+  reply_label_->setVisible(true);
+}
+
+void NavPanel::callTrigger(
+  const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr & client,
+  const QString & service, std::function<void(bool)> on_reply)
+{
+  if (!client->service_is_ready()) {
+    showReply(service, false, "service not available (is trajectory_controller running?)");
+    if (on_reply) {
+      on_reply(false);
+    }
+    return;
+  }
+  using Future = rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture;
+  client->async_send_request(
+    std::make_shared<std_srvs::srv::Trigger::Request>(),
+    [this, service, on_reply](Future future) {
+      const auto reply = future.get();
+      const bool ok = reply->success;
+      const QString message = QString::fromStdString(reply->message);
+      QMetaObject::invokeMethod(
+        this, [this, service, ok, message, on_reply]() {
+          showReply(service, ok, message);
+          if (on_reply) {
+            on_reply(ok);
+          }
+        }, Qt::QueuedConnection);
+    });
 }
 
 // ──────────────────────────────────────────────────────────────────────────── //
@@ -334,42 +453,47 @@ void NavPanel::onStartButtonClicked()
   if (!nav_client_->wait_for_service(std::chrono::seconds(1))) {
     start_button_->setText("Service Not Found!");
     start_button_->setStyleSheet(buttonStyle("#e74c3c"));
+    showReply(
+      "/start_navigation", false,
+      "service not available (is trajectory_controller running?)");
     return;
   }
-  nav_client_->async_send_request(
-    std::make_shared<std_srvs::srv::Trigger::Request>());
-
-  start_button_->setText("Navigation Running");
+  start_button_->setText("Starting...");
   start_button_->setStyleSheet(buttonStyle("#3498db"));
   start_button_->setEnabled(false);
+  callTrigger(
+    nav_client_, "/start_navigation", [this](bool ok) {
+      if (ok) {
+        start_button_->setText("Navigation Running");
+      } else if (!is_safe_stop_ && !is_estop_ && !is_manual_mode_) {
+        // Refused (the reply line says why): the controller stays in IDLE and sends no telemetry
+        start_button_->setText("Start Navigation");
+        start_button_->setStyleSheet(buttonStyle("#4e2ecc"));
+        start_button_->setEnabled(true);
+      }
+    });
 }
 
 void NavPanel::onManualButtonClicked()
 {
-  if (!manual_client_->service_is_ready()) {
-    return;
-  }
-  manual_client_->async_send_request(
-    std::make_shared<std_srvs::srv::Trigger::Request>());
+  callTrigger(manual_client_, "/toggle_manual_mode");
+}
+
+void NavPanel::onStopButtonClicked()
+{
+  callTrigger(safe_stop_client_, "/safe_stop");
+  // telemetryCallback shows Resume when SAFE_STOP telemetry arrives
 }
 
 void NavPanel::onEstopButtonClicked()
 {
-  if (!estop_client_->service_is_ready()) {
-    return;
-  }
-  estop_client_->async_send_request(
-    std::make_shared<std_srvs::srv::Trigger::Request>());
-  // telemetryCallback will update button states when SAFE_STOP telemetry arrives
+  callTrigger(estop_client_, "/trigger_estop");
+  // telemetryCallback freezes the panel when ESTOP telemetry arrives
 }
 
 void NavPanel::onResumeButtonClicked()
 {
-  if (!resume_client_->service_is_ready()) {
-    return;
-  }
-  resume_client_->async_send_request(
-    std::make_shared<std_srvs::srv::Trigger::Request>());
+  callTrigger(resume_client_, "/resume");
   // telemetryCallback will hide resume_button_ and re-enable controls when IDLE telemetry arrives
 }
 
@@ -490,8 +614,7 @@ bool NavPanel::eventFilter(QObject * obj, QEvent * event)
         if (changed) {
           // Auto-switch to MANUAL on first keypress if not already there
           if (!is_manual_mode_ && manual_client_->service_is_ready()) {
-            manual_client_->async_send_request(
-              std::make_shared<std_srvs::srv::Trigger::Request>());
+            callTrigger(manual_client_, "/toggle_manual_mode");
           }
           updateTeleopFromKeys();
         }

@@ -5,7 +5,8 @@ trajectory_controller:
   ros__parameters:
     adrc:
       b0: 0.5       # System gain: how powerfully throttle affects speed
-      w_cl: 2.0     # Controller bandwidth: how aggressively it chases the target (~4/w_cl sec settle)
-      k_eso: 5.0    # Observer bandwidth ratio: how much faster the ESO runs vs the controller
+      w_cl: 2.0     # Controller bandwidth: how aggressively it chases the target. The code uses Kp = 2 * w_cl,
+                    #   so the ideal loop settles in about 2 / w_cl s (1 s), before the shuttle's delays
+      k_eso: 5.0    # Observer bandwidth ratio: the ESO poles sit at k_eso * w_cl (10 rad/s), k_eso / 2 times the loop
     vehicle_bridge:
       zero_speed_tolerance: 0.1  # m/s — speed below which the vehicle is considered stopped

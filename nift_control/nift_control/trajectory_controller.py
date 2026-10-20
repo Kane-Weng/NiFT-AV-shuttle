@@ -43,15 +43,21 @@ Description:
   modes/control_modes.py.  All mode transitions go through _set_mode(), which calls
   handler.on_enter() for one-shot resets and stop outputs.  This file contains only
   ROS2 wiring — no per-mode branching logic.
+  /trigger_estop → ESTOP: the CAN E-stop frame 0x100 and full brake, latched. _set_mode
+  never leaves ESTOP, so only a node restart clears it (then power-cycle the shuttle).
+  /safe_stop → SAFE_STOP from AUTONOMOUS or MANUAL, as a watchdog does; /resume → IDLE.
 
   Safety filter
   ─────────────
   The SafetyFilter interface (filters/filter_base.py) decouples obstacle-handling
   from both the path planner and the ADRC controller.  filter_type 'none' passes
-  commands through (system.launch.py uses it when perception is off).
+  commands through (system.launch.py uses it when perception is off). The filters
+  plan their stops with the shuttle's measured braking, brake_decel_mps2 after
+  brake_delay_s (filters/filter_utils.py).
 
   Lateral / longitudinal
   ──────────────────────
+  lateral_controller picks the path tracker: 'pure_pursuit' (default) or 'stanley'.
   lateral_enabled: false (system.launch.py without `lateral`) refuses
   /start_navigation, so only MANUAL is reachable: ADRC speed control from
   /teleop_cmd_vel, which needs /gnss/vel (filter: /localization/odom + status)
@@ -94,12 +100,12 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import Marker
 
-from .controllers import (  # noqa: F401  (StanleyController: the commented-out alternative)
+from .controllers import (
     ADRCController,
     PurePursuitController,
     StanleyController,
 )
-from .dbw_interface import NiftVehicleBridge, VehicleMode
+from .dbw_interface import NiftVehicleBridge
 from .filters import (
     DistanceStopFilter,
     FilterStatus,
@@ -107,12 +113,14 @@ from .filters import (
     PassThroughFilter,
     PotentialFieldAvoidanceFilter,
 )
+from .filters.filter_utils import BRAKE_DECEL_MPS2, BRAKE_DELAY_S
 from .modes import ControlMode, HANDLERS
 
 PATH_LOOP_HZ = 10      # Outer loop: lateral control + speed planning  [Hz]
 ACTUATION_HZ = 20      # Inner loop: ADRC + CAN                        [Hz]
 
 LOCALIZATION_SOURCES = ('gnss', 'filter')
+LATERAL_CONTROLLERS = ('pure_pursuit', 'stanley')
 # /localization/status level → state (localization_node: OK / WARN = DEGRADED / ERROR = LOST).
 # Any other level (STALE, unknown) counts as LOST.
 LOC_LEVELS = {0: 'OK', 1: 'DEGRADED', 2: 'LOST'}
@@ -133,16 +141,19 @@ class TrajectoryController(Node):
         #  Parameters                                                        #
         # ------------------------------------------------------------------ #
         self.declare_parameters(namespace='', parameters=[
-            ('goal_tolerance', 1.5),
+            ('goal_tolerance', 1.5),     # planning.yaml runs 2.0
             ('pure_pursuit_ld_min', 4.0),
             ('pure_pursuit_ld_max', 8.0),
             ('base_speed', 3.5),
             ('cte_tolerance', 1.5),
-            ('decel_distance', 6.0),
+            ('decel_distance', 6.0),     # planning.yaml runs 10.0
             ('min_crawl_speed', 0.5),
             ('min_safe_dist', 2.0),
             ('safe_dist_gain', 1.5),
             ('filter_type', 'cbf'),   # 'distance_stop' | 'cbf' | 'potential_field' | 'none'
+            ('brake_decel_mps2', BRAKE_DECEL_MPS2),  # braking the filters plan with (measured)
+            ('brake_delay_s', BRAKE_DELAY_S),     # brake command → speed reacts (measured)
+            ('lateral_controller', 'pure_pursuit'),    # 'pure_pursuit' | 'stanley'
             ('collision_zone_dist', 0.8),     # auto-trigger SAFE_STOP if obstacle closer than this
             ('gnss_timeout_s', 0.3),     # SAFE_STOP if no /gnss/vel this long while driving
             ('lateral_enabled', True),    # false: /start_navigation refused, MANUAL only
@@ -196,9 +207,17 @@ class TrajectoryController(Node):
                 'localization_status_timeout_s must be > 0, degraded_speed_cap_mps and '
                 'degraded_cap_after_s >= 0'
             )
+        self._lateral_controller = self.get_parameter('lateral_controller').value
+        if self._lateral_controller not in LATERAL_CONTROLLERS:
+            raise ValueError(f'lateral_controller "{self._lateral_controller}": '
+                             f'expected one of {LATERAL_CONTROLLERS}')
         min_safe_dist = self.get_parameter('min_safe_dist').value
         _safe_dist_gain = self.get_parameter('safe_dist_gain').value
         filter_type = self.get_parameter('filter_type').value
+        brake_decel = float(self.get_parameter('brake_decel_mps2').value)
+        brake_delay = float(self.get_parameter('brake_delay_s').value)
+        if brake_decel <= 0.0 or brake_delay < 0.0:
+            raise ValueError('brake_decel_mps2 must be > 0 and brake_delay_s >= 0')
         b0 = self.get_parameter('adrc.b0').value
         w_cl = self.get_parameter('adrc.w_cl').value
         k_eso = self.get_parameter('adrc.k_eso').value
@@ -213,10 +232,11 @@ class TrajectoryController(Node):
         )
         self.bridge = NiftVehicleBridge(zero_speed_tolerance=zero_speed_tol)
 
+        brake = {'brake_decel': brake_decel, 'brake_delay': brake_delay}
         _FILTERS = {
-            'distance_stop': lambda: DistanceStopFilter(min_safe_dist, _safe_dist_gain),
-            'cbf': lambda: KinematicCBFFilter(min_safe_dist=min_safe_dist, gamma=1.0),
-            'potential_field': lambda: PotentialFieldAvoidanceFilter(),
+            'distance_stop': lambda: DistanceStopFilter(min_safe_dist, _safe_dist_gain, **brake),
+            'cbf': lambda: KinematicCBFFilter(min_safe_dist, gamma=1.0, **brake),
+            'potential_field': lambda: PotentialFieldAvoidanceFilter(**brake),
             'none': lambda: PassThroughFilter(),
         }
         if filter_type not in _FILTERS:
@@ -234,6 +254,8 @@ class TrajectoryController(Node):
             self.get_logger().info(
                 'Lateral control disabled: /start_navigation refused, MANUAL only'
             )
+        elif self._lateral_controller != 'pure_pursuit':
+            self.get_logger().info(f'Lateral controller: {self._lateral_controller}')
         if self._loc_filter:
             self.get_logger().info(
                 'Localization source: filter (speed from /localization/odom; '
@@ -337,6 +359,7 @@ class TrajectoryController(Node):
         self.srv_estop = self.create_service(
             Trigger, 'trigger_estop', self._estop_service_callback
         )
+        self.srv_safe = self.create_service(Trigger, 'safe_stop', self._safe_stop_callback)
         self.srv_resume = self.create_service(Trigger, 'resume', self._resume_callback)
 
         # ------------------------------------------------------------------ #
@@ -363,6 +386,12 @@ class TrajectoryController(Node):
     def _set_mode(self, new_mode: ControlMode) -> None:
         if new_mode == self._mode:
             return
+        if self._mode == ControlMode.ESTOP:
+            # ESTOP is a latch, like the shuttle's own E-stop: only a node restart leaves it
+            self.get_logger().error(
+                f'E-STOPPED: ignoring the switch to {new_mode.name}. Restart this node.',
+                throttle_duration_sec=1.0)
+            return
         prev = self._mode
         self._mode = new_mode
         HANDLERS[new_mode].on_enter(self, prev)
@@ -383,11 +412,9 @@ class TrajectoryController(Node):
         self._set_speed(msg.twist.linear.x)
 
     def _set_speed(self, speed: float):
-        # Flip sign in reverse so ADRC error is always defined consistently
-        if self.bridge.state == VehicleMode.REVERSE:
-            self.state.vel = -abs(speed)
-        else:
-            self.state.vel = abs(speed)
+        # Flip sign in reverse gear so ADRC error is always defined consistently. That
+        # includes BRAKING_TO_FORWARD, which still rolls backwards until it stops.
+        self.state.vel = self.bridge.signed_speed(speed)
 
     def _loc_odom_callback(self, msg: Odometry):
         """
@@ -473,13 +500,15 @@ class TrajectoryController(Node):
         # ====================================================================#
         # ||||||||||||||||||  LATERAL CONTROLLER CHOICE  |||||||||||||||||||||#
         # ====================================================================#
-        # self.lateral_ctrl = StanleyController(
-        #     self._waypoints, k=0.5, v_min=0.5
-        # )
-
-        self.lateral_ctrl = PurePursuitController(
-            self._waypoints, self._ld_min, self._ld_max, self._base_speed
-        )
+        # Parameter lateral_controller (checked at startup)
+        if self._lateral_controller == 'stanley':
+            self.lateral_ctrl = StanleyController(
+                self._waypoints, k=0.5, v_min=0.5
+            )
+        else:
+            self.lateral_ctrl = PurePursuitController(
+                self._waypoints, self._ld_min, self._ld_max, self._base_speed
+            )
         # ====================================================================#
         # ||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||#
         # ====================================================================#
@@ -489,7 +518,8 @@ class TrajectoryController(Node):
     def _start_nav_callback(self, _request, response):
         if self._mode == ControlMode.ESTOP:
             response.success = False
-            response.message = 'Cannot start: Vehicle is E-STOPPED. Restart the node to recover.'
+            response.message = ('Cannot start: Vehicle is E-STOPPED. Restart this node, then '
+                                'power-cycle the shuttle, to recover.')
             return response
         if self._mode == ControlMode.SAFE_STOP:
             response.success = False
@@ -531,9 +561,8 @@ class TrajectoryController(Node):
     def _toggle_manual_callback(self, _request, response):
         if self._mode == ControlMode.ESTOP:
             response.success = False
-            response.message = (
-                'Cannot switch mode: Vehicle is E-STOPPED. Restart the node to recover.'
-            )
+            response.message = ('Cannot switch mode: Vehicle is E-STOPPED. Restart this node, '
+                                'then power-cycle the shuttle, to recover.')
             return response
         if self._mode == ControlMode.SAFE_STOP:
             response.success = False
@@ -564,12 +593,40 @@ class TrajectoryController(Node):
         return response
 
     def _estop_service_callback(self, _request, response):
-        self._request_safe_stop()
+        """/trigger_estop: the hardware E-stop (ESTOP) from any mode, latched until a restart."""
+        already = self._mode == ControlMode.ESTOP
+        self._set_mode(ControlMode.ESTOP)
         response.success = True
-        response.message = 'SAFE STOP engaged. Call /resume to return to IDLE.'
+        response.message = (('Already E-STOPPED. ' if already else
+                             'E-STOP engaged (0x100 sent, brake held). ')
+                            + 'To recover, restart this node, then power-cycle the shuttle.')
+        return response
+
+    def _safe_stop_callback(self, _request, response):
+        """/safe_stop: the soft, resumable stop (AUTONOMOUS or MANUAL → SAFE_STOP)."""
+        if self._mode == ControlMode.ESTOP:
+            response.success = False
+            response.message = ('Cannot safe-stop: Vehicle is E-STOPPED. Restart this node, then '
+                                'power-cycle the shuttle, to recover.')
+        elif self._mode == ControlMode.SAFE_STOP:
+            response.success = True
+            response.message = 'Already in SAFE STOP. Call /resume to return to IDLE.'
+        elif self._mode == ControlMode.IDLE:
+            response.success = True
+            response.message = 'Already stopped (IDLE).'
+        else:
+            self.get_logger().info(f'SAFE STOP requested (/safe_stop) while {self._mode.name}')
+            self._request_safe_stop()
+            response.success = True
+            response.message = 'SAFE STOP engaged. Call /resume to return to IDLE.'
         return response
 
     def _resume_callback(self, _request, response):
+        if self._mode == ControlMode.ESTOP:
+            response.success = False
+            response.message = ('Cannot resume: Vehicle is E-STOPPED. Restart this node, then '
+                                'power-cycle the shuttle, to recover.')
+            return response
         if self._mode != ControlMode.SAFE_STOP:
             response.success = False
             response.message = (
@@ -600,12 +657,14 @@ class TrajectoryController(Node):
             stat.add('Degraded Speed Cap', self._cap_str())
             stat.add('Localization Stops', str(self._loc_counts['stops']))
         if self._safe_stop_hold_steering:
+            stopped = self._mode in (ControlMode.SAFE_STOP, ControlMode.ESTOP)
             stat.add('Safe Stop Steering', f"held at {self._safe_stop_steer_deg:+.2f} deg"
-                     if self._mode == ControlMode.SAFE_STOP else 'holds the last command')
+                     if stopped else 'holds the last command')
 
         if self._mode == ControlMode.ESTOP:
             stat.summary(
-                diagnostic_msgs.msg.DiagnosticStatus.ERROR, 'E-STOPPED — node restart required'
+                diagnostic_msgs.msg.DiagnosticStatus.ERROR,
+                'E-STOPPED: restart this node, then power-cycle the shuttle'
             )
         elif self._mode == ControlMode.SAFE_STOP:
             stat.summary(

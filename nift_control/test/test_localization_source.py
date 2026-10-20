@@ -266,7 +266,7 @@ def test_gnss_safe_stop_steers_zero(make):
     node._delta_safe = math.radians(10.0)
     node._actuate_loop()
     assert frames(node)[-1].steering_angle_deg == pytest.approx(10.0, abs=0.01)
-    node._estop_service_callback(None, Trigger.Response())
+    node._request_safe_stop()                # what the watchdogs call (/trigger_estop is ESTOP)
     advance(node, 0.05)
     gnss_vel(node, 1.0)
     node._actuate_loop()
@@ -538,14 +538,14 @@ def test_filter_safe_stop_holds_the_autonomous_steering(make):
     assert frames(node)[-2].steering_angle_deg == 0.0
 
 
-def test_filter_safe_stop_by_service_and_from_manual_holds(make):
+def test_filter_safe_stop_from_manual_holds(make):
     node = make(**FILTER)
     fresh(node)
     assert toggle_manual(node).success
     node._manual_delta = math.radians(7.0)
     tick(node)
     n = len(node.can.items)
-    node._estop_service_callback(None, Trigger.Response())
+    node._request_safe_stop()
     tick(node)
     assert_stop_frames(frames(node)[n:], 7.0)
 
@@ -568,7 +568,7 @@ def test_filter_safe_stop_from_the_path_loop_holds_the_last_frame_sent(make):
 
 def test_filter_safe_stop_from_idle_steers_zero(make):
     node = make(**FILTER)
-    node._estop_service_callback(None, Trigger.Response())
+    node._request_safe_stop()
     tick(node)
     assert_stop_frames(frames(node), 0.0)
 

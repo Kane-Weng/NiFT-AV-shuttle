@@ -12,7 +12,10 @@
  * Key Features:
  * - One-Click Activation: Start Navigation button calls /start_navigation.
  * - Manual Toggle: Enable/Disable manual mode via /toggle_manual_mode.
- * - E-STOP: Immediately halts the vehicle via /trigger_estop.
+ * - Stop: the soft, resumable stop via /safe_stop (SAFE_STOP, then Resume).
+ * - E-STOP: the latching hardware E-stop via /trigger_estop (ESTOP: restart the
+ *   controller, then power-cycle the shuttle).
+ * - Reply line: shows each service's reply (success or the reason it was refused).
  * - Keyboard Teleop Zone: Click-to-focus WASD area that publishes Twist
  *   to /teleop_cmd_vel. Auto-switches to MANUAL mode on first keypress.
  * - Live Telemetry Feed: Subscribes to /nav_telemetry and updates the
@@ -43,6 +46,9 @@
 #include <QFrame>
 #include <QTimer>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
+
+#include <functional>
 
 namespace nift_rviz_plugins
 {
@@ -59,6 +65,7 @@ public:
 protected Q_SLOTS:
   void onStartButtonClicked();
   void onManualButtonClicked();
+  void onStopButtonClicked();
   void onEstopButtonClicked();
   void onResumeButtonClicked();
   void publishTeleop();
@@ -68,14 +75,24 @@ protected:
   void setTeleopActive(bool active);
   void updateTeleopFromKeys();
   void switchView(const QString & name);
+  void applyStatus(const QString & status);
+  void checkTelemetryAge();
+  void showReply(const QString & service, bool ok, const QString & message);
+  void callTrigger(
+    const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr & client,
+    const QString & service, std::function<void(bool)> on_reply = nullptr);
 
   // ── Navigation buttons ───────────────────────────────────────────────── //
   QPushButton * start_button_;
   QPushButton * manual_button_;
+  QPushButton * stop_button_;
   QPushButton * estop_button_;
   QPushButton * resume_button_;
+  QLabel * reply_label_;
   QLabel * telemetry_label_;
   bool is_safe_stop_ {false};
+  bool is_estop_ {false};
+  QElapsedTimer telemetry_age_;     // since the last /nav_telemetry
 
   // ── Keyboard teleop zone ─────────────────────────────────────────────── //
   QFrame * teleop_zone_;
@@ -95,6 +112,7 @@ protected:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr nav_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr manual_client_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr safe_stop_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr estop_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr resume_client_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr teleop_pub_;

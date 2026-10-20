@@ -36,6 +36,11 @@ Description:
   During BRAKING_* states the bridge enforces a minimum brake of 50 to
   ensure the vehicle decelerates even when u is small.
 
+  NiftVehicleBridge.signed_speed(speed)
+    Gives a measured speed the sign of the way the shuttle rolls. It is negative in
+    the reverse-gear states, REVERSE and BRAKING_TO_FORWARD. BRAKING_TO_FORWARD still
+    rolls backwards until the shuttle stops. The controllers feed this to ADRC.
+
 Usage:
   from .vehicle_interface import NiftVehicleBridge, VehicleMode
 """
@@ -55,12 +60,25 @@ class VehicleMode(Enum):
     BRAKING_TO_FORWARD = 4
 
 
+# The states that hold the reverse gear. The shuttle rolls backwards in both, until it stops.
+REVERSE_GEAR_STATES = (VehicleMode.REVERSE, VehicleMode.BRAKING_TO_FORWARD)
+
+
 class NiftVehicleBridge():
 
     def __init__(self, zero_speed_tolerance=0.1):
         self.state = VehicleMode.STANDBY
         # m/s (speed at which we consider the vehicle "stopped")
         self.zero_speed_tolerance = zero_speed_tolerance
+
+    def signed_speed(self, speed):
+        """
+        Give an unsigned speed [m/s] the sign of the way the shuttle rolls, for ADRC.
+
+        Negative in REVERSE and BRAKING_TO_FORWARD (reverse gear, still rolling backwards),
+        positive in every other state.
+        """
+        return -abs(speed) if self.state in REVERSE_GEAR_STATES else abs(speed)
 
     def map_signals(self, u, target_speed, current_speed):
         """

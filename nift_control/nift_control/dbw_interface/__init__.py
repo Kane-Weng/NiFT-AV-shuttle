@@ -6,7 +6,7 @@ from .can_interface import (
     decode_estop_frame,
     Gear,
 )
-from .vehicle_interface import NiftVehicleBridge, VehicleMode
+from .vehicle_interface import NiftVehicleBridge, REVERSE_GEAR_STATES, VehicleMode
 
 __all__ = [
     'create_command_frame',
@@ -17,4 +17,5 @@ __all__ = [
     'CommandFrame',
     'NiftVehicleBridge',
     'VehicleMode',
+    'REVERSE_GEAR_STATES',
 ]

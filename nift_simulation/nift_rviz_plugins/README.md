@@ -8,11 +8,11 @@ More depth on the wiki: [nift_rviz_plugins](https://github.com/Kane-Weng/NiFT-AV
 
 | Panel (dock title) | What it does | ROS interfaces |
 |---|---|---|
-| `NavPanel` (Navigation) | Start navigation, switch manual mode, software E-STOP and Resume, keyboard teleop (WASD or arrows), live telemetry, camera buttons for the saved views | calls `/start_navigation`, `/toggle_manual_mode`, `/trigger_estop`, `/resume` (`std_srvs/Trigger`); publishes `/teleop_cmd_vel` (`geometry_msgs/Twist`, 10 Hz while the teleop zone has focus); subscribes `/nav_telemetry` (`std_msgs/String`) |
+| `NavPanel` (Navigation) | Start navigation, switch manual mode, Stop (resumable) and E-STOP (latching), Resume, a line with the last service reply, keyboard teleop (WASD or arrows), live telemetry, camera buttons for the saved views | calls `/start_navigation`, `/toggle_manual_mode`, `/safe_stop`, `/trigger_estop`, `/resume` (`std_srvs/Trigger`); publishes `/teleop_cmd_vel` (`geometry_msgs/Twist`, 10 Hz while the teleop zone has focus); subscribes `/nav_telemetry` (`std_msgs/String`) |
 | `TfMonitorPanel` (TF Monitor) | One line with the shuttle's position and heading in the map, or a red warning when the transform is missing | looks up `map → base_link` in TF, 10 Hz |
 | `NodeCheckerPanel` (System Health) | A green, yellow, red or grey mark for every node that reports on `/diagnostics`, with the message under any entry that is not OK | subscribes `/diagnostics` (`diagnostic_msgs/DiagnosticArray`) |
 
-The services and the telemetry belong to `trajectory_controller` in `nift_control`. The teleop zone sends a manual-mode request on the first key press. The panel's steering limit is a copy of `max_steering_deg` in `nift_common/vehicle.yaml`, on a line marked `owner:`, and a test in `nift_common` checks that it still matches.
+The services and the telemetry belong to `trajectory_controller` in `nift_control`. The teleop zone sends a manual-mode request on the first key press. The panel reads the controller's mode from the `STATUS` line of `/nav_telemetry`. In `SAFE_STOP` it shows Resume. In `ESTOP` it freezes every control but E-STOP, because the E-stop latches until the controller restarts and the shuttle is power-cycled. Either view ends when the telemetry stops for 2 s, which means the controller was restarted or is gone. The panel's steering limit is a copy of `max_steering_deg` in `nift_common/vehicle.yaml`, on a line marked `owner:`, and a test in `nift_common` checks that it still matches.
 
 ## Using it
 

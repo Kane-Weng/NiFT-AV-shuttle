@@ -2,6 +2,7 @@
 
 trajectory_controller:
   ros__parameters:
+    lateral_controller: "pure_pursuit"  # path tracker: "pure_pursuit" | "stanley" (Stanley not tried on the shuttle)
     goal_tolerance: 2.0       # meters — distance to final waypoint that counts as "arrived"
     pure_pursuit_ld_min: 4.0  # meters — minimum adaptive lookahead distance (low speed)
     pure_pursuit_ld_max: 8.0  # meters — maximum adaptive lookahead distance (high speed)
@@ -12,6 +13,8 @@ trajectory_controller:
     min_safe_dist: 2.0        # meters — fixed component of the obstacle safety margin
     safe_dist_gain: 1.5       # speed-dependent gain added to the safety margin
     filter_type: "cbf"        # safety filter: "distance_stop" | "cbf" | "potential_field" | "none" (pass-through)
+    brake_decel_mps2: 0.5     # m/s^2, the braking every filter plans its stops with (measured 0.5 to 0.65)
+    brake_delay_s: 0.7        # seconds from a brake command until the speed reacts (measured 0.5 to 0.7)
     collision_zone_dist: 0.8  # meters — if any obstacle is closer than this while autonomous, auto-trigger SAFE_STOP
     obstacle_timeout_s: 0.5   # seconds — no usable /obstacles this long while autonomous -> SAFE_STOP (not with filter none)
     # localization_source (gnss | filter) is set by the launch (filter on alone = ekf -> filter); with filter only:

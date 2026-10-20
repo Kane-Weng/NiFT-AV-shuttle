@@ -24,7 +24,8 @@ Description:
 
   Tuning knobs:
     b0    — control gain (how powerfully throttle affects speed)
-    w_cl  — closed-loop bandwidth [rad/s]; higher = faster settling
+    w_cl  — closed-loop bandwidth [rad/s]; higher = faster settling.
+            The gain is Kp = 2 * w_cl, twice the textbook value (see __init__)
     k_eso — observer-to-controller bandwidth ratio; higher = observer
             responds faster, but amplifies sensor noise
 
@@ -117,7 +118,11 @@ class ADRCController(LongitudinalController):
 
         # --- 1. TUNING THE CONTROLLER ---
         # Convert the desired bandwidth (w_cl) into a Proportional Gain (Kp).
-        # The math guarantees the shuttle will settle on the target speed in ~4/w_cl seconds.
+        # sCL = -w_cl, and Kp = -2 * sCL = 2 * w_cl. That is twice the textbook first-order
+        # gain (Herbst 2013 takes Kp = -sCL = w_cl). With the disturbance cancelled, the loop
+        # is first order with its pole at -Kp, so it settles (2 %) in about 4 / Kp = 2 / w_cl
+        # seconds, not 4 / w_cl. The shuttle's own delays make the real response slower.
+        # The gains in adrc_params.yaml were tuned on the shuttle with this factor, so it stays.
         t_settle = 4 / w_cl
         sCL = -4 / t_settle
         self.Kp = -2 * sCL
@@ -125,6 +130,7 @@ class ADRCController(LongitudinalController):
         # --- 2. TUNING THE OBSERVER ---
         # The observer needs to be faster than the controller so it can detect
         # disturbances (like a hill) before the controller tries to react.
+        # Its poles sit at k_eso * sCL = -k_eso * w_cl, which is k_eso / 2 times the loop pole -Kp.
         sESO = k_eso * sCL
         zESO = np.exp(sESO * delta)  # Moving from continuous time to discrete steps
 
