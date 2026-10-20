@@ -2,49 +2,58 @@
 
 `nift_sensor` is the perception and localization package. It bridges the physical world into the ROS graph: raw GPS signals become a position + heading + velocity, raw LiDAR point clouds become obstacle polygons, and everything gets anchored into the coordinate frame that the rest of the stack expects.
 
-The package contains three nodes that run continuously alongside each other.
+The package has four ROS nodes and one command line tool. The [wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/nift_sensor) explains each of them in depth.
+
+| Executable | What it does |
+|---|---|
+| `beacon_node` | Reads the front and rear RTK beacons from Mcity's Octane server, checks the feed, publishes `/gnss/*` |
+| `shuttle_tf_node` | Turns each fix and heading straight into the `map → base_link` transform (`direct` mode) |
+| `localization_node` | An EKF on the two antennas, the GNSS speed and our own steering; publishes `map → base_link` predicted to now (`ekf` mode) and a status |
+| `lidar_node` | Turns each LiDAR scan into obstacle polygons on `/obstacles` |
+| `octane_logger` | Not a ROS node: records the raw Octane feed and the network link to a JSONL file |
 
 ---
 
 ## Overview
 
 ```
-Hardware / Simulation
-─────────────────────────────────────────────────────────────────────
-Mcity Octane RTK server  (real)  ─┐
-  or nift_carla Octane emulator (sim) ─┘ → [beacon_node]
-                                           → /gnss/fix
-                                           → /gnss/heading_deg
-                                           → /gnss/vel
+Mcity Octane RTK server (real)  ─┐
+  or nift_carla Octane emulator ─┴─ socket.io → [beacon_node] → /gnss/fix, /gnss/heading_deg, /gnss/vel
+                                                              → /gnss/raw/front, /gnss/raw/rear, /gnss/hygiene
 
-LiDAR (Velodyne) → /scan → [lidar_node]
-                          → /obstacles  (2D polygon per obstacle cluster)
+/gnss/fix + /gnss/heading_deg  → [shuttle_tf_node]   → TF map → base_link          (direct, shadow)
+/gnss/raw/* + /gnss/vel + our 0x101 CAN commands
+                               → [localization_node] → TF map → base_link          (ekf)
+                                                     → /localization/odom, /localization/status
 
-/gnss/fix + /gnss/heading_deg → [shuttle_tf_node]
-                               → TF: map → base_link  (real and CARLA sim)
+LiDAR (Velodyne) or CARLA LiDAR → /scan → [lidar_node] → /obstacles (2D polygon per obstacle)
 ```
+
+Each input comes from the shuttle's hardware or from `nift_carla`'s stand-in in simulation, never both; the kinematic simulation has no LiDAR.
 
 ---
 
 ## How It Works
 
-### GNSS Localization — `beacon_node`
+### GNSS Localization: `beacon_node`
 
 The shuttle uses **two GPS antennas** (front and rear) for RTK localization. Having two antennas is what enables precise heading without an IMU: the vector from the rear antenna to the front antenna points in exactly the direction the vehicle is facing.
 
-`beacon_node` connects via Socket.io to the Mcity Octane RTK server — a local infrastructure that provides centimeter-accurate positioning using a fixed base station at Mcity. The node subscribes to a real-time data stream, filters for the shuttle's specific beacon IDs, and normalizes the data format.
+`beacon_node` connects via Socket.io to the Mcity Octane RTK server, an infrastructure service that provides centimeter-accurate positioning using a fixed base station at Mcity. The node subscribes to a real-time data stream, filters for the shuttle's specific beacon IDs, and normalizes the data format. The ROS-free part (the `.env` lookup, payload normalization, and a `probe()` that checks `auth_ok` and both antennas) lives in `nift_sensor/octane_client.py`, shared with the `system.launch.py` preflight check.
 
-**Simulation** runs the same code. The CARLA bridge (`nift_carla`, published later) serves the same Socket.io protocol from its Octane emulator, and its launch files point `MCITY_OCTANE_*` at it.
+**Feed checks** (`nift_sensor/gnss_hygiene.py`): Octane repeats positions, delivers some late or out of order, and sometimes relays an older position under a fresh stamp. Every delivery is checked per antenna (late, stuck, older epoch, clock jump) and as a front / rear pair (antenna distance, heading change, midpoint step). Only a pair that passes is published. Every delivery also goes out on `/gnss/raw/front` / `/gnss/raw/rear` (status FIX if used, NO_FIX if dropped), and every dropped one on `/gnss/hygiene` with its verdict. By default the antenna distance is learned from 20 pairs at rest, so start the node with the shuttle standing still. `hygiene.enabled:=false` (launch: `gnss_checks:=false`) turns the checks off.
 
-**Stale data.** If either antenna has not delivered a new position for `gnss_timeout_s`, the node stops publishing until both report again. An Octane outage shows up as silence on `/gnss/*`, and `trajectory_controller` then brings the shuttle to a safe stop.
+**Simulation** runs the same code: the CARLA bridge (`nift_carla`) serves the same Socket.io protocol from its Octane emulator, and `system.launch.py` (any `mode: sim` profile) points `MCITY_OCTANE_*` at it.
+
+**Stale data:** if either antenna has not delivered a new position, or no pair has passed the checks, for `gnss_timeout_s`, the node stops publishing until a fresh pair is accepted. An Octane outage shows up as silence on `/gnss/*`, and `trajectory_controller` then SAFE_STOPs.
 
 **Heading computation:**
 ```
-heading = atan2(Δlon, Δlat)   where Δ = front_antenna − rear_antenna
+heading = atan2(Δeast, Δnorth)   Δ = front − rear antenna, in metres
 ```
-This gives a compass bearing (degrees from North, clockwise) that is published directly.
+Both antenna positions are converted to metres east and north first (WGS84 radii of curvature at their mean latitude), so the result is a compass bearing: degrees from true north, clockwise, published directly.
 
-**Speed:** the RTK server provides velocity directly (`/gnss/vel`).
+**Speed:** the RTK server provides velocity directly (`/gnss/vel`). Octane reports it in **knots** (measured on the shuttle: reported speed ÷ position-derived speed = 1.94); `octane_client.normalize()` converts to m/s, so every subscriber sees m/s.
 
 **Published topics:**
 
@@ -53,88 +62,71 @@ This gives a compass bearing (degrees from North, clockwise) that is published d
 | `/gnss/fix` | `sensor_msgs/NavSatFix` | Front antenna lat/lon/altitude |
 | `/gnss/heading_deg` | `std_msgs/Float64` | Compass heading in degrees (0 = North, clockwise) |
 | `/gnss/vel` | `geometry_msgs/TwistStamped` | Speed in `twist.linear.x` (m/s) |
+| `/gnss/raw/front`, `/gnss/raw/rear` | `sensor_msgs/NavSatFix` | Every delivery as received; FIX = used, NO_FIX = dropped |
+| `/gnss/hygiene` | `std_msgs/String` | JSON per dropped delivery: antenna, verdict, stamp, lat / lon |
 
 ---
 
-### LiDAR Obstacle Detection — `lidar_node`
+### Coordinate Bridge: `shuttle_tf_node`
+
+The rest of the stack lives in the **map frame** (a fixed, UTM-projected coordinate system). But GPS gives us lat/lon, and the vehicle's body is in **base_link** (moving with the vehicle). This node bridges them.
+
+1. `/gnss/fix` is the front antenna. Its lat/lon is projected to UTM zone 17N relative to the map origin (`map_origin_lat` / `map_origin_lon`): the antenna's position in `map`.
+2. `/gnss/heading_deg` is a compass bearing from true north, but the map's +y is UTM grid north. The two differ by the grid convergence (1.82° at Mcity); the node measures it at the map origin and uses it to turn the bearing into a map yaw (0 = +x, counter-clockwise).
+3. The antenna sits `gnss.offset_x` ahead of `base_link` (mid-wheelbase). Rotated by the yaw and subtracted, that gives `base_link`'s position, which with the yaw is the `map → base_link` transform.
+
+Nothing else publishes into this TF chain (no wheel odometry, on the shuttle or in CARLA), so the node publishes `map → base_link` directly.
+
+---
+
+### Localization Filter: `localization_node`
+
+`shuttle_tf_node`'s pose is as old as the fix (0.1–0.2 s) and freezes when the feed pauses. `localization_node` wraps `localization_filter.py`, an EKF on a kinematic bicycle model. It fuses both antennas' raw positions, the GNSS speed, and the steering, gear and brake of our own `0x101` drive commands (only while `trajectory_controller` is actually driving), predicts the pose to now at 50 Hz, and carries it across short GNSS gaps. `/localization/status` says OK, DEGRADED (bridging) or LOST.
+
+Only one node publishes `map → base_link`; the system launch picks the mode:
+
+| Mode | `map → base_link` from | `localization_node` |
+|---|---|---|
+| `direct` (default) | `shuttle_tf_node` | off |
+| `ekf` | `localization_node` | publishes TF, odom and status; the controller follows the status |
+| `shadow` | `shuttle_tf_node` | odom and status only, for recording beside the direct transform |
+
+**Open question: the antenna lever arm on the shuttle.** The antennas' positions (`gnss_front_x` / `gnss_rear_x`, ±1.041 m from `base_link`) come from `nift_common`'s `vehicle.yaml`, which the URDF, the sims, `shuttle_tf_node` and `localization_node` all use. They have not been measured on the shuttle yet (driving data suggest 1.2–1.6 m); once they are, change them there.
+
+---
+
+### LiDAR Obstacle Detection: `lidar_node`
 
 The LiDAR produces a dense 3D point cloud (~100k points per scan at 10 Hz). The node runs a multi-stage pipeline to reduce that to simple 2D polygons representing obstacles in the vehicle's path.
 
-**Pipeline:**
+1. **Voxel downsample**: one point per voxel (`voxel_size`), so the later steps get a few thousand points instead of ~100k.
+2. **RANSAC ground removal**: RANSAC (Random Sample Consensus) fits a plane to the dominant surface, the road. It picks 3 random points, fits a plane, counts the points within `ransac_distance_threshold` of it, and repeats (`ransac_max_iterations`). The plane with the most inliers is the road; its inliers are dropped as ground.
+3. **ROI crop**: keeps the non-ground points inside the box ahead of the vehicle (`roi.*`, in the sensor frame).
+4. **Tilt correction**: rotates the points into `base_link` with the LiDAR's static transform from the URDF (full 3D rotation), so dropping z later doesn't shorten distances when the sensor is tilted. Without that transform the frame is dropped.
+5. **Height gate**, on in simulation only (`min_obstacle_height` is 0.2 m in `perception_carla.yaml`, 0 = off on the shuttle): drops points less than `min_obstacle_height` above the ground under the vehicle, the road surface a single RANSAC plane misses on a crowned road.
+6. **DBSCAN clustering** (Density-Based Spatial Clustering) in the flat `base_link` x-y plane. Unlike K-means it doesn't need the number of clusters: a point with at least `dbscan_min_points` neighbours within `dbscan_eps` is a core point, clusters grow outward from core points, and points too sparse for a cluster are noise. Clusters outside `min_cluster_size`–`max_cluster_size` points are dropped.
+7. **Convex hull** of each cluster, in 2D: the smallest convex polygon around its points, the obstacle footprint.
 
-```
-Raw PointCloud2 (/scan)
-    │
-    ▼ 1. Voxel Downsampling
-    │   Grid-quantize all points to a configurable voxel size (default 0.05 m).
-    │   Reduces ~100k points to a few thousand for fast processing.
-    │
-    ▼ 2. ROI Crop
-    │   Discard anything outside: x ∈ [0.3, 12.0] m (forward),
-    │   y ∈ [−4.0, 4.0] m (lateral), z ∈ [−1.5, 2.0] m (vertical).
-    │   Keeps only the region ahead of the vehicle where obstacles matter.
-    │
-    ▼ 3. RANSAC Ground Removal
-    │   RANSAC (Random Sample Consensus) fits a plane to the dominant surface —
-    │   the road. It works by randomly picking 3 points, fitting a plane,
-    │   counting how many other points are "close enough" (inliers within
-    │   0.15 m), and repeating. The plane with the most inliers is the road.
-    │   All points within that threshold are discarded as ground.
-    │
-    ▼ 4. DBSCAN Clustering
-    │   DBSCAN (Density-Based Spatial Clustering) groups the remaining points
-    │   into objects. Unlike K-means, it doesn't require you to specify how many
-    │   clusters to find — it discovers them based on density.
-    │   Key parameters: eps (neighborhood radius = 0.6 m) and min_points (3).
-    │   Any point with at least min_points neighbors within eps is a "core point"
-    │   of a cluster; clusters grow outward from core points. Points too sparse
-    │   to form a cluster are labeled as noise and discarded.
-    │
-    ▼ 5. Convex Hull
-    │   For each cluster, project the 3D points into 2D (X-Y plane) and compute
-    │   the convex hull — the smallest convex polygon containing all points.
-    │   This becomes the obstacle footprint.
-    │
-    ▼ 6. TF Transform
-        Apply the sensor → base_link transform (full 3D rotation, handles LiDAR
-        tilt) before projecting to 2D, so all obstacles are in the vehicle's
-        body frame regardless of how the sensor is mounted.
+Output: `/obstacles`, one `PolygonStamped` per obstacle in `base_link`, all with the cloud's stamp. A frame with no obstacle publishes one empty polygon, so consumers drop the previous ones.
 
-Output: /obstacles (one PolygonStamped per obstacle, in base_link frame)
-```
-
-**Debug topics** (for RViz visualization during development):
+**Debug topics** (for RViz during development; the three clouds only with `publish_debug_clouds`, default on):
 
 | Topic | Content |
 |---|---|
-| `/ground_points` | Points classified as road (after RANSAC) |
-| `/nonground_points` | Non-ground points before clustering |
-| `/front_points` | ROI-cropped cloud |
+| `/ground_points` | Points removed as road (step 2) |
+| `/nonground_points` | Points left after step 2 |
+| `/front_points` | Points left after the ROI crop (step 3) |
 | `/roi_visual` | 3D wireframe box of the ROI region |
 
 ---
 
-### Coordinate Bridge — `shuttle_tf_node`
+### Raw feed recorder: `octane_logger`
 
-The rest of the stack lives in the **map frame** (a fixed, UTM-projected coordinate system). But GPS gives us lat/lon, and the vehicle's body is in **base_link** (moving with the vehicle). This node bridges them.
+A plain Python program (no ROS) that logs every Octane event exactly as it arrives, plus a TCP and Wi-Fi probe once a second, to `<out>/octane_<time>.jsonl`, and a summary with gaps per antenna at the end. Use it to map where GNSS drops out on the track and whether the shuttle's own link was the cause.
 
-**Conversion chain:**
+```bash
+ros2 run nift_sensor octane_logger --out octane_logs --minutes 10
 ```
-GPS lat/lon  →  UTM Zone 17N (meters East/North)
-                │
-                │  subtract GNSS antenna offset
-                │  (front antenna `gnss.offset_x` ahead of base_link = mid-wheelbase, rotated by heading)
-                ▼
-             base_link position in map frame
-                │
-                │  heading_deg → quaternion
-                ▼
-             map → base_link transform
-```
-
-Nothing else publishes into this TF chain (no wheel odometry, on the shuttle or in CARLA), so the node always publishes `map → base_link` directly.
-
-**Open question: the antenna lever arm on the shuttle.** `config/shuttle_tf.yaml` sets `gnss.offset_x: 1.3` under the node name `shuttle_dynamic_broadcaster`, but `launch/shuttle_tf.launch.py` starts the node as `shuttle_tf_broadcaster`. So the file does not apply, and the code default of 1.041 m is used. The URDF puts the antennas at ±1.04 m. Which value matches the shuttle has to be decided before either is changed.
 
 ---
 
@@ -142,36 +134,60 @@ Nothing else publishes into this TF chain (no wheel odometry, on the shuttle or 
 
 ### beacon_node
 
+`config/beacon_node.yaml` holds every parameter with its code default.
+
 | Parameter | Default | Description |
 |---|---|---|
-| `gnss_timeout_s` | `0.5` | Stop publishing `/gnss/*` once either antenna has had no new position this long |
+| `gnss_timeout_s` | `0.5` | Stop publishing `/gnss/*` once an antenna's last new position, or the last accepted pair, is this old |
+| `hygiene.enabled` | `true` | The feed checks; false publishes every new stamp |
+| `hygiene.*` | see the YAML | Limits of the per-antenna and pair checks |
 
-Real-world credentials come from `nift_sensor/.env` (not committed to git).
+Real-world credentials come from `nift_sensor/.env` (copy `.env_example`; `.env` is not committed to git).
+
+### localization_node
+
+`config/localization.yaml` holds the shuttle's values (mode, GNSS delay, steering and brake inputs, filter thresholds). The geometry and the map origin default to `nift_common`.
 
 ### lidar_node
 
-| Parameter | Default | Description |
-|---|---|---|
-| `voxel_size` | `0.05` m | Downsampling grid resolution |
-| `ransac_distance_threshold` | `0.15` m | Max distance from ground plane to be classified as ground |
-| `ransac_max_iterations` | `120` | RANSAC fitting iterations |
-| `dbscan_eps` | `0.6` m | Neighborhood radius for cluster membership |
-| `dbscan_min_points` | `3` | Minimum points to form a cluster core |
-| `roi.min_x / max_x` | `0.3 / 12.0` m | Forward detection range |
-| `roi.min_y / max_y` | `−4.0 / 4.0` m | Lateral detection width |
-| `roi.min_z / max_z` | `−1.5 / 2.0` m | Vertical range |
+`system.launch.py` loads `config/perception.yaml` on the shuttle and `nift_carla`'s `config/perception_carla.yaml` in simulation (`perception_yaml:=` for another file); the code default applies to anything a file leaves out.
+
+| Parameter | Code default | Shuttle | Simulation | Description |
+|---|---|---|---|---|
+| `voxel_size` | `0.1` m | `0.05` m | `0.05` m | Downsampling grid resolution |
+| `ransac_distance_threshold` | `0.15` m | `0.15` m | `0.25` m | Max distance from the ground plane to count as ground |
+| `ransac_max_iterations` | `120` | `120` | `200` | RANSAC fitting iterations |
+| `min_obstacle_height` | `0.0` (off) | off | `0.20` m | Height gate above the ground under the vehicle |
+| `dbscan_eps` | `0.45` m | `0.6` m | `0.6` m | Neighborhood radius for cluster membership |
+| `dbscan_min_points` | `8` | `3` | `6` | Minimum neighbours for a core point |
+| `min_cluster_size` / `max_cluster_size` | `8` / `5000` | `3` / `5000` | `6` / `5000` | Clusters outside this many points are dropped |
+| `roi.min_x / max_x` | `0.3 / 12.0` m | same | same | Forward detection range |
+| `roi.min_y / max_y` | `−4.0 / 4.0` m | same | `−2.5 / 2.5` m | Lateral detection width |
+| `roi.min_z / max_z` | `−1.5 / 2.0` m | same | same | Vertical range |
 
 ### shuttle_tf_node
 
 | Parameter | Default | Description |
 |---|---|---|
-| `gnss.offset_x` | `1.041` m | Front GNSS antenna distance ahead of `base_link` (mid-wheelbase); see the open question above |
+| `gnss.offset_x` | `1.041` m (`vehicle.yaml` `gnss_front_x`) | Front GNSS antenna distance ahead of `base_link` (mid-wheelbase); see the open question above |
 | `gnss.offset_y` | `0.0` m | Lateral GNSS offset |
-| `map_origin_lat` | `42.3005` | UTM projection origin latitude (Mcity) |
-| `map_origin_lon` | `−83.6987` | UTM projection origin longitude (Mcity) |
+| `map_origin_lat` | `42.3005` (`nift_common.site`) | UTM projection origin latitude (Mcity) |
+| `map_origin_lon` | `−83.6987` (`nift_common.site`) | UTM projection origin longitude (Mcity) |
 
 ---
 
-> This package is launched automatically by the system bringup — see the [main README](../README.md) for launch commands.
+## Tests
 
-**Maintainer**: Kane Weng (kaichi@umich.edu) — License: Apache-2.0
+```bash
+pip3 install -r src/nift_sensor/requirements.txt
+colcon build --packages-up-to nift_sensor
+colcon test --packages-select nift_sensor && colcon test-result --verbose
+```
+
+Unit tests cover the feed checks, the localization filter and node, the Octane helpers and the heading chain; flake8 and pep257 run too.
+
+---
+
+> This package is launched by the system bringup, see the [main README](../README.md#getting-started) for launch commands.
+
+**Maintainer**: Kane Weng (kaichi@umich.edu), License: Apache-2.0

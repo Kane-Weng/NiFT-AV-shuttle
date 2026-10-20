@@ -1,0 +1,38 @@
+# localization_node (nift_sensor/localization_node.py): the shuttle's values. Left out, so the node's defaults from
+# nift_common (vehicle.yaml, site.py) apply: the geometry (wheelbase_m, base_link_x_m, antenna.front_x_m / rear_x_m,
+# speed_point_x_m = the front receiver), brake.min_count and the map origin. The antenna lever arms are unmeasured:
+# change gnss_front_x / gnss_rear_x there (rear = front minus the baseline beacon_node's diagnostics show it learned).
+# The sims override speed_point_x_m (the kinematic sim reports the rear axle's speed) and gnss_delay_s (0 for the
+# ideal sim feed).
+localization_node:
+  ros__parameters:
+    mode: ekf                   # ekf: publishes the TF map -> base_link; shadow: odom + status only (shuttle_tf_node
+    #                             keeps the TF)
+    antenna:
+      y_m: 0.0                  # both antennas, left of the centreline
+    gnss_delay_s: 0.061         # mean age of a position at its first delivery (sim real-feed model; the shuttle's
+    #                             extra GNSS latency is not measured yet)
+    steer_input_states: [NAVIGATING, MANUAL, SAFE_STOP]   # /nav_telemetry STATUS values in which our 0x101 drives
+    #                                                       the wheels; otherwise the filter runs without steering
+    telemetry_timeout_s: 0.5
+    brake:                      # braking = 0x101 brake >= min_count (vehicle.yaml brake_full_count)
+      decel_mps2: 0.6           # 0 = no braking input; the sim plant (fitted to the shuttle) brakes 0.72 - 0.15 v
+      dead_time_s: 0.47         # command -> deceleration (2026-10-08 plant fit, includes the GNSS delay)
+    publish_rate_hz: 50.0
+    filter:                     # localization_filter.FilterConfig; the rest keep their defaults
+      # status: OK -> DEGRADED (bridging on the model) -> LOST (trajectory_controller SAFE_STOPs)
+      ok_age_s: 0.5             # no accepted position this long -> DEGRADED
+      bridge_s: 1.5             # ... this long (from the last position's measurement time) -> LOST
+      bridge_m: 3.0             # ... or this far on the model -> LOST
+      settle_s: 0.5             # DEGRADED (settling) this long after a (re)start
+      # which GNSS positions it takes
+      gate_pos: 13.8            # position gate, chi-square 2 dof (99.9 %); larger = takes odder positions
+      stale_drain: 0.5          # after a gap Octane's backlog drains at this many s per s (measured ~1.0; 0.5 is
+      #                           the cautious side: positions may be older than they look)
+      steer_tau_s: 0.0          # wheel lag behind our steering command; 0 = none (not measured on the shuttle yet)
+      # (re)starting
+      reinit_yaw_deg: 20.0      # a restart needs the pair heading within this of the dead-reckoned one (refuses a
+      #                           swapped pair)
+      baseline_tol_m: 0.15      # start pair: antenna distance within this of the lever arms' (+ speed x stamp gap)
+      baseline_learn_pairs: 5   # first start, distance not the lever arms': adopt the distance this many pairs agree
+      baseline_learn_spread_m: 0.06   # ... on within this (0 pairs = refuse to start instead, saying why)

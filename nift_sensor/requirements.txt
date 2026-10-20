@@ -1,14 +1,10 @@
-bidict==0.23.1
-certifi==2026.1.4
-charset-normalizer==3.4.4
-h11==0.16.0
-idna==3.11
-packaging==26.0
-python-dotenv==1.2.1
-python-engineio==4.13.0
-python-socketio==5.16.0
-requests==2.32.5
-simple-websocket==1.1.0
-urllib3==2.6.3
-websocket-client==1.9.0
-wsproto==1.2.0
+# Python packages without a usable rosdep key, installed by bootstrap.sh:
+#   python3 -m pip install --user -r nift_sensor/requirements.txt
+# Everything else comes from package.xml through rosdep. Keep this to direct dependencies: a pip freeze here
+# would pin packaging / requests / urllib3 in ~/.local over the apt versions colcon and rosdep use.
+
+# beacon_node / octane_client: socket.io client to Mcity Octane (also the sim's octane_emulator, server side).
+# Tested with 5.16.
+python-socketio[client]>=5.11,<6
+# octane_client: reads MCITY_OCTANE_* from nift_sensor/.env (no rosdep key for python3-dotenv)
+python-dotenv>=1.0

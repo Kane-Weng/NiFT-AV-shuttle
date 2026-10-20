@@ -11,11 +11,15 @@ Description:
 
   Connects to the Mcity Octane Socket.io RTK server and receives live
   dual-GNSS beacon updates for the front and rear antennas. Normalizes
-  the payload, then routes it through the publishing logic.
-  Stale gate: if either antenna has not delivered a *new* position
-  (`updated` changed) for `gnss_timeout_s` (node clock), nothing is
-  published until both report again, so an Octane outage shows up
-  downstream as silence instead of a frozen fix republished at 50 Hz.
+  the payload, checks it (gnss_hygiene.BeaconHygiene: late, stuck and
+  inconsistent data is dropped; parameters hygiene.*), then routes the
+  last accepted front / rear pair through the publishing logic at 50 Hz.
+  Stale gate: if either antenna has not delivered a fresh position, or
+  no pair has passed the checks, for `gnss_timeout_s` (node clock),
+  nothing is published until both report again, so an Octane outage or
+  a bad feed shows up downstream as silence instead of a frozen or wrong
+  fix republished at 50 Hz. hygiene.enabled:=false goes back to the old
+  rule (fresh = `updated` changed; every delivery is published).
 
   Simulation runs this same code: nift_carla's Octane emulator serves the
   same protocol, and its launch file points MCITY_OCTANE_* at it.
@@ -23,29 +27,49 @@ Description:
   Publishing logic (_publish_gnss):
   - /gnss/fix         — front antenna position only (lat/lon/alt)
   - /gnss/heading_deg — compass heading of the rear -> front vector
-  - /gnss/vel         — TwistStamped with linear.x = speed in m/s
+  - /gnss/vel         — TwistStamped with linear.x = speed in m/s (Octane reports knots;
+                        octane_client.normalize() converts, measured 2026-10-08)
+  Raw feed (every delivery of the two beacons, as received):
+  - /gnss/raw/front, /gnss/raw/rear — NavSatFix stamped with `updated`; status FIX if the
+                        delivery is in the published stream, NO_FIX if a check dropped it
+  - /gnss/hygiene     — std_msgs/String JSON per dropped delivery or re-anchor:
+                        {"antenna", "verdict", "updated", "lat", "lon"}; counts in /diagnostics.
+                        Includes no_pair (a new position whose partner is > 0.5 s old: passed
+                        the per-antenna checks, not pair-checked; localization_node uses it as
+                        an unpaired position), which is not logged
 
 Usage:
   ros2 run nift_sensor beacon_node
 """
 
+from dataclasses import fields
 from datetime import datetime, timezone
+import json
 import math
-import os
-from pathlib import Path
 import threading
 
 import diagnostic_msgs.msg
 import diagnostic_updater
-from dotenv import load_dotenv
 from geometry_msgs.msg import TwistStamped
+from rcl_interfaces.msg import ParameterDescriptor
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 import socketio
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, String
+
+from .gnss_hygiene import BeaconHygiene, HygieneConfig
+from .octane_client import normalize, octane_config  # normalize: also imported from here by tests
+
+# verdicts of deliveries that are in the published stream
+USED = ('accepted', 'reanchored', 'repeat')
+# not logged
+QUIET = ('accepted', 'repeat', 'repeat_unused', 'learning', 'no_pair', 'duplicate', 'ignored')
+# not on /gnss/hygiene either (a re-anchor is on it)
+TOPIC_QUIET = tuple(v for v in QUIET if v != 'no_pair')
+
 
 # ----------------------------
 # Utility functions
@@ -72,59 +96,25 @@ def iso8601_to_ros_time(node: Node, s: str):
         return node.get_clock().now().to_msg()
 
 
-def normalize(payload: dict) -> dict:
-    """
-    Normalize two observed schemas into one dict.
-
-    The result has the keys id, ts, lat, lon, alt, elev, speed, heading and source.
-    """
-    beacon_id = payload.get('id') or payload.get('idFixed') or payload.get('idTemporary')
-
-    # Schema A: state.dynamics
-    if (isinstance(payload.get('state'), dict)
-            and isinstance(payload['state'].get('dynamics'), dict)):
-        dyn = payload['state']['dynamics']
-        return {
-            'id': beacon_id,
-            'ts': dyn.get('updated') or payload.get('updated'),
-            'lat': dyn.get('latitude'),
-            'lon': dyn.get('longitude'),
-            'alt': dyn.get('altitude', 0.0),
-            'elev': dyn.get('elevation'),
-            'speed': dyn.get('velocity'),
-            'heading': dyn.get('heading'),
-            'source': 'state_dynamics',
-        }
-
-    # Schema B: flat J2735
-    return {
-        'id': beacon_id,
-        'ts': payload.get('updated'),
-        'lat': payload.get('latitude'),
-        'lon': payload.get('longitude'),
-        'alt': 0.0,
-        'elev': payload.get('elevation'),
-        'speed': payload.get('speed'),
-        'heading': payload.get('heading'),
-        'source': 'j2735_bsm',
-    }
-
-
 def compute_heading_from_beacons(lat_r, lon_r, lat_f, lon_f):
     """
     Compute the compass heading of the vector pointing from the rear to the front antenna.
 
     The result is (heading_rad, heading_deg), where 0 deg = North and 90 deg = East.
     """
-    R = 6371000.0
     lat_r_rad = math.radians(lat_r)
     lon_r_rad = math.radians(lon_r)
     lat_f_rad = math.radians(lat_f)
     lon_f_rad = math.radians(lon_f)
 
+    # WGS84 radii of curvature (one sphere radius for both axes: 0.1 deg off on diagonals at Mcity)
+    a, e2 = 6378137.0, 6.69437999014e-3
     lat_avg = 0.5 * (lat_r_rad + lat_f_rad)
-    dx = (lon_f_rad - lon_r_rad) * math.cos(lat_avg) * R
-    dy = (lat_f_rad - lat_r_rad) * R
+    w = 1.0 - e2 * math.sin(lat_avg) ** 2
+    r_east = a / math.sqrt(w)                   # prime vertical
+    r_north = a * (1.0 - e2) / w ** 1.5         # meridian
+    dx = (lon_f_rad - lon_r_rad) * math.cos(lat_avg) * r_east
+    dy = (lat_f_rad - lat_r_rad) * r_north
 
     heading_rad = math.atan2(dx, dy)
     heading_deg = math.degrees(heading_rad)
@@ -140,14 +130,20 @@ def compute_heading_from_beacons(lat_r, lon_r, lat_f, lon_f):
 
 class BeaconNode(Node):
 
-    def __init__(self):
-        super().__init__('nift_beacon_node')
+    def __init__(self, **kwargs):
+        # kwargs: Node options (tests: parameter_overrides)
+        super().__init__('nift_beacon_node', **kwargs)
 
         # Publishers
         self.pub_fix = self.create_publisher(NavSatFix, '/gnss/fix', qos_profile_sensor_data)
         self.pub_vel = self.create_publisher(TwistStamped, '/gnss/vel', qos_profile_sensor_data)
-        self.pub_heading = self.create_publisher(
-            Float64, '/gnss/heading_deg', qos_profile_sensor_data)
+        self.pub_heading = self.create_publisher(Float64, '/gnss/heading_deg',
+                                                 qos_profile_sensor_data)
+        self.pub_raw = {'front': self.create_publisher(NavSatFix, '/gnss/raw/front',
+                                                       qos_profile_sensor_data),
+                        'rear': self.create_publisher(NavSatFix, '/gnss/raw/rear',
+                                                      qos_profile_sensor_data)}
+        self.pub_hygiene = self.create_publisher(String, '/gnss/hygiene', 10)
 
         # Diagnostics
         self.diag_updater = diagnostic_updater.Updater(self)
@@ -161,25 +157,36 @@ class BeaconNode(Node):
     # =========================================================================
 
     def _init_real_mode(self):
-        """Load .env credentials and connect to the Mcity Octane RTK server over Socket.io."""
-        env_path = Path(__file__).resolve()
-        for parent in [env_path.parent, *env_path.parents]:
-            candidate = parent / '.env'
-            if candidate.exists():
-                load_dotenv(candidate)
-                break
-        else:
-            load_dotenv()
+        """
+        Load the Octane settings and connect to the Octane server.
 
-        self.api_key = os.getenv('MCITY_OCTANE_KEY')
-        self.server = os.getenv('MCITY_OCTANE_SERVER', 'https://octane.invalid')
-        self.namespace = os.getenv('MCITY_OCTANE_NAMESPACE', '/octane')
-        self.filter_id_front = os.getenv('MCITY_FRONT_BEACON_ID', '')
-        self.filter_id_rear = os.getenv('MCITY_REAR_BEACON_ID', '')
+        Loads .env credentials and initializes the Socket.io connection to the Mcity Octane RTK
+        server.
+        """
+        # nift_sensor/.env; MCITY_OCTANE_* already in the environment win
+        cfg = octane_config()
+        self.api_key = cfg.get('MCITY_OCTANE_KEY')
+        self.server = cfg['MCITY_OCTANE_SERVER']
+        self.namespace = cfg['MCITY_OCTANE_NAMESPACE']
+        self.filter_id_front = cfg['MCITY_FRONT_BEACON_ID']
+        self.filter_id_rear = cfg['MCITY_REAR_BEACON_ID']
         self.data_lock = threading.Lock()
         self.latest_by_id = {}
         self.gnss_timeout_s = float(self.declare_parameter('gnss_timeout_s', 0.5).value)
         self._stale = False
+        self.hygiene = None
+        if self.declare_parameter('hygiene.enabled', True).value:
+            # 3 or 3.0 both work from the command line
+            dyn = ParameterDescriptor(dynamic_typing=True)
+            cfg = HygieneConfig(**{
+                f.name: type(f.default)(
+                    self.declare_parameter(f'hygiene.{f.name}', f.default, dyn).value)
+                for f in fields(HygieneConfig)})
+            self.hygiene = BeaconHygiene(self.filter_id_front, self.filter_id_rear, cfg)
+            self.get_logger().info(f'beacon feed checks on: {cfg}')
+        else:
+            self.get_logger().warn(
+                'beacon feed checks OFF (hygiene.enabled false): every new stamp is published')
 
         if not self.api_key:
             raise RuntimeError('MCITY_OCTANE_KEY not set. Create .env based on .env.example')
@@ -224,30 +231,81 @@ class BeaconNode(Node):
             return
         if beacon_id not in [self.filter_id_front, self.filter_id_rear]:
             return
+        antenna = 'front' if beacon_id == self.filter_id_front else 'rear'
         now_ns = self.get_clock().now().nanoseconds
         with self.data_lock:
-            prev = self.latest_by_id.get(beacon_id)
-            # An event that repeats the previous position (same `updated`) is not fresh data
-            same = prev is not None and n.get('ts') is not None and n.get('ts') == prev.get('ts')
-            n['rx_ns'] = prev['rx_ns'] if same else now_ns
-            self.latest_by_id[beacon_id] = n
+            if self.hygiene is not None:
+                learning = self.hygiene.baseline_m is None
+                verdict = self.hygiene.add(n, now_ns / 1e9)
+                baseline = self.hygiene.baseline_m if learning else None
+            else:
+                prev = self.latest_by_id.get(beacon_id)
+                # An event that repeats the previous position (same `updated`) is not fresh data
+                same = (prev is not None and n.get('ts') is not None
+                        and n.get('ts') == prev.get('ts'))
+                n['rx_ns'] = prev['rx_ns'] if same else now_ns
+                self.latest_by_id[beacon_id] = n
+                verdict, baseline = 'accepted', None
+        self._publish_raw(antenna, n, verdict in USED)
+        if baseline is not None:
+            self.get_logger().info(
+                f'antenna baseline {baseline:.3f} m (learned): feed checks active')
+        if verdict not in TOPIC_QUIET:
+            self.pub_hygiene.publish(String(data=json.dumps(
+                {'antenna': antenna, 'verdict': verdict, 'updated': n.get('ts'),
+                 'lat': n.get('lat'), 'lon': n.get('lon')})))
+        if verdict not in QUIET:
+            if verdict == 'reanchored':
+                self.get_logger().warn(
+                    f'GNSS feed checks re-anchored on a consistent pair ({antenna} delivery)')
+            else:
+                self.get_logger().warn(f'GNSS {antenna} delivery dropped: {verdict}',
+                                       throttle_duration_sec=1.0)
+
+    def _publish_raw(self, antenna, n, used):
+        """One delivery as received (both beacons), for bags and the later filter."""
+        if n.get('lat') is None or n.get('lon') is None:
+            return
+        fix = NavSatFix()
+        fix.header.stamp = iso8601_to_ros_time(self, n.get('ts'))
+        fix.header.frame_id = f'gps_{antenna}'
+        fix.latitude = float(n['lat'])
+        fix.longitude = float(n['lon'])
+        elev = n.get('elev')
+        fix.altitude = float(elev) if elev is not None else float(n.get('alt') or 0.0)
+        fix.status.status = NavSatStatus.STATUS_FIX if used else NavSatStatus.STATUS_NO_FIX
+        fix.status.service = NavSatStatus.SERVICE_GPS
+        fix.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+        self.pub_raw[antenna].publish(fix)
 
     def _publish_latest(self):
-        with self.data_lock:
-            front = self.latest_by_id.get(self.filter_id_front)
-            rear = self.latest_by_id.get(self.filter_id_rear)
-
-        if front is None or rear is None:
-            return
-
         now_ns = self.get_clock().now().nanoseconds
-        age_f = (now_ns - front['rx_ns']) / 1e9
-        age_r = (now_ns - rear['rx_ns']) / 1e9
-        if max(age_f, age_r) > self.gnss_timeout_s:
+        with self.data_lock:
+            if self.hygiene is not None:
+                h = self.hygiene
+                if h.accepted is None:
+                    return
+                # copies: a repeat updates `ts` in place
+                front, rear = (dict(x) for x in h.accepted)
+                age_f, age_r = now_ns / 1e9 - h.new_rx[0], now_ns / 1e9 - h.new_rx[1]
+                age_p = now_ns / 1e9 - h.accepted_rx
+            else:
+                front = self.latest_by_id.get(self.filter_id_front)
+                rear = self.latest_by_id.get(self.filter_id_rear)
+                if front is None or rear is None:
+                    return
+                age_f = (now_ns - front['rx_ns']) / 1e9
+                age_r = (now_ns - rear['rx_ns']) / 1e9
+                age_p = 0.0
+
+        if max(age_f, age_r, age_p) > self.gnss_timeout_s:
             if not self._stale:
                 self._stale = True
+                checked = (f', last consistent pair {age_p:.2f} s' if self.hygiene is not None
+                           else '')
                 self.get_logger().warn(
-                    f'GNSS stale (no new position: front {age_f:.2f} s, rear {age_r:.2f} s) '
+                    f'GNSS stale (no new position: front {age_f:.2f} s, '
+                    f'rear {age_r:.2f} s{checked}) '
                     f'-> /gnss/* paused until both beacons report again')
             return
         if self._stale:
@@ -267,7 +325,7 @@ class BeaconNode(Node):
 
         stamp = iso8601_to_ros_time(self, front.get('ts'))
 
-        spd = front.get('speed')
+        spd = front.get('speed')               # m/s: normalize() already converted Octane's knots
         speed_mps = float(spd) if spd is not None else None
 
         self._publish_gnss(
@@ -331,6 +389,15 @@ class BeaconNode(Node):
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.OK, 'Connected to RTK Server')
         else:
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.ERROR, 'DISCONNECTED from Server')
+        if getattr(self, 'hygiene', None) is None:
+            stat.add('feed checks', 'off')
+            return stat
+        with self.data_lock:
+            counts, baseline = dict(self.hygiene.counts), self.hygiene.baseline_m
+        stat.add('antenna baseline (m)', 'learning' if baseline is None else f'{baseline:.3f}')
+        for k in ('accepted', 'repeat', 'reanchored', 'out_of_order', 'stuck', 'older_position',
+                  'baseline', 'heading', 'step', 'time_jump'):
+            stat.add(f'feed check {k}', str(counts.get(k, 0)))
         return stat
 
 

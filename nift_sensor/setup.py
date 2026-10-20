@@ -32,6 +32,8 @@ setup(
             'beacon_node = nift_sensor.beacon_node:main',
             'lidar_node = nift_sensor.lidar_node:main',
             'shuttle_tf_node = nift_sensor.shuttle_tf_node:main',
+            'octane_logger = nift_sensor.octane_logger:main',
+            'localization_node = nift_sensor.localization_node:main',
         ],
     },
 )

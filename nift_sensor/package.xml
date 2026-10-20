@@ -19,10 +19,13 @@
   <depend>lanelet2</depend>
 
   <depend>python3-numpy</depend>
+  <depend>can_msgs</depend>
+  <exec_depend>nift_common</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-sklearn</exec_depend>
   <exec_depend>python3-open3d</exec_depend>
   <exec_depend>diagnostic_updater</exec_depend>
+  <!-- python-socketio[client] and python-dotenv come from pip: see requirements.txt -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

@@ -1,0 +1,24 @@
+# beacon_node (nift_sensor/beacon_node.py): the GNSS feed checks (gnss_hygiene.py). The values are the code defaults,
+# here so they are easy to find and change. hygiene.enabled comes from the launch (gnss_checks:=true|false), not
+# from this file; the minimum turning radius comes from nift_common's vehicle.yaml. Keyed /** because the node is
+# beacon_node under the launch and nift_beacon_node under `ros2 run ... --ros-args --params-file <this file>`.
+/**:
+  ros__parameters:
+    gnss_timeout_s: 0.5           # stale gate: nothing is published once an antenna's last new position, or the last
+    #                               pair that passed the checks, is this old (the controller's GNSS watchdog follows)
+    hygiene:
+      # per antenna
+      stuck_speed_mps: 0.3        # "moving": at or above this reported speed
+      stuck_s: 0.3                # moving, the same position again although first stamped longer ago = stuck feed
+      time_jump_s: 0.3            # stamp interval vs arrival interval differing by more = a time jump (re-anchor)
+      order_tol_m: 0.05           # moving, a position this far behind the antenna's own track = an older epoch
+      # per front / rear pair
+      antenna_baseline_m: 0.0     # front - rear antenna distance; 0 = learn it at rest at start-up
+      baseline_learn_pairs: 20    # ... from this many pairs (median)
+      baseline_tol_m: 0.15        # pair distance within this of it (+ what the speed explains)
+      heading_tol_deg: 5.0        # heading change vs the last good pair (+ what the distance driven allows)
+      step_tol_m: 0.3             # antenna midpoint jump across the direction of travel
+      along_tol_m: 0.5            # ... and along it
+      reset_s: 2.0                # no good pair this long -> take the next consistent one (re-anchor)
+      pair_window_s: 0.5          # front and rear stamps at most this far apart to form a pair
+      sync_s: 0.15                # ... and this close for the pair to become the reference

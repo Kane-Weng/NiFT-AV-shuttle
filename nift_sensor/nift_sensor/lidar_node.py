@@ -36,6 +36,7 @@ import time
 import diagnostic_msgs.msg
 import diagnostic_updater
 from geometry_msgs.msg import Point, Point32, PolygonStamped
+from nift_common.vehicle import ShuttleConfig
 import numpy as np
 import open3d as o3d
 import rclpy
@@ -178,8 +179,8 @@ class LidarObstacleNode(Node):
                 ('roi.max_z', 2.0),
                 ('voxel_size', 0.1),
                 ('min_obstacle_height', 0.0),   # m above the ground under the vehicle; 0 = off
-                # base_link above the ground (URDF base_footprint_joint)
-                ('base_link_height', 0.9525),
+                # base_link above the ground
+                ('base_link_height', ShuttleConfig().base_link_height),
             ]
         )
 

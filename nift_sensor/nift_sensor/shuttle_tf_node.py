@@ -26,6 +26,8 @@ import diagnostic_updater
 from geometry_msgs.msg import TransformStamped
 import lanelet2
 from lanelet2.projection import UtmProjector
+from nift_common.site import MAP_ORIGIN_LAT, MAP_ORIGIN_LON
+from nift_common.vehicle import ShuttleConfig
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -43,10 +45,10 @@ class ShuttleDynamicBroadcaster(Node):
 
         self.current_yaw_enu = 0.0
 
-        self.declare_parameter('gnss.offset_x', 1.041)
+        self.declare_parameter('gnss.offset_x', ShuttleConfig().gnss_front_x)
         self.declare_parameter('gnss.offset_y', 0.0)
-        self.declare_parameter('map_origin_lat', 42.3005)
-        self.declare_parameter('map_origin_lon', -83.6987)
+        self.declare_parameter('map_origin_lat', MAP_ORIGIN_LAT)
+        self.declare_parameter('map_origin_lon', MAP_ORIGIN_LON)
 
         self.gnss_offset_x = self.get_parameter('gnss.offset_x').value
         self.gnss_offset_y = self.get_parameter('gnss.offset_y').value
@@ -63,10 +65,20 @@ class ShuttleDynamicBroadcaster(Node):
         self.map_origin_x = ref.x
         self.map_origin_y = ref.y
 
+        # /gnss/heading_deg is relative to true north, but map +y is UTM grid north. They differ
+        # by the grid convergence (1.82 deg at Mcity: true north = map yaw 88.18 deg); 90 - heading
+        # alone put the yaw 1.82 deg left, which Pure Pursuit turned into a constant ~0.13 m
+        # offset to the right. Map yaw of true north at the origin (< 0.01 deg change in Mcity):
+        north = self.projector.forward(
+            lanelet2.core.GPSPoint(map_origin_lat + 0.001, map_origin_lon, 0.0)
+        )
+        self.true_north_yaw = math.atan2(north.y - ref.y, north.x - ref.x)
+
         self.get_logger().info(
             f'TF broadcaster initialised — publishes map → base_link, '
             f'origin=({map_origin_lat}, {map_origin_lon}), '
-            f'gnss_offset_x={self.gnss_offset_x:.3f}m'
+            f'gnss_offset_x={self.gnss_offset_x:.3f}m, '
+            f'true north = map yaw {math.degrees(self.true_north_yaw):.2f} deg'
         )
 
         self.sub_fix = self.create_subscription(
@@ -94,8 +106,8 @@ class ShuttleDynamicBroadcaster(Node):
         return stat
 
     def heading_callback(self, msg: Float64):
-        # Convert compass heading (0=North, CW) to ROS ENU yaw (0=East, CCW)
-        self.current_yaw_enu = math.radians(90.0 - msg.data)
+        # Convert compass heading (0=true north, CW) to map yaw (0=+x, CCW)
+        self.current_yaw_enu = self.true_north_yaw - math.radians(msg.data)
 
     def gps_fix_callback(self, msg: NavSatFix):
         self.last_fix_time = self.get_clock().now()
