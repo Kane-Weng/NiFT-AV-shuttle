@@ -1,0 +1,34 @@
+# NiFT shuttle: the physical facts every package shares. The single source: Python reads it through
+# nift_common.vehicle.ShuttleConfig, the URDF (shuttle_description) through xacro.load_yaml. Change a value here only.
+# Installed as share/nift_common/config/vehicle.yaml.
+
+# Geometry [m]
+wheel_radius: 0.228
+wheel_width: 0.213
+wheel_base: 2.082               # full lock (max_steering_deg) = a 7.77 m turn radius
+wheel_tread: 0.73533            # gap between the wheels; wheel centres are (tread + width) apart
+front_overhang: 0.4830572
+rear_overhang: 0.48977042
+height: 1.905
+length: 3.055
+width: 1.588
+base_link_height: 0.9525        # base_link above the ground; base_link sits mid-wheelbase
+
+# Kinematics and dynamics
+max_steering_deg: 15.0          # full lock of the front wheels = the 0x101 command limit
+max_speed: 4.91744              # [m/s] governor (11 mph)
+max_accel: 0.8                  # [m/s^2]
+max_decel: 7.0                  # [m/s^2]
+mass: 500.0                     # [kg]
+cog_height: 0.658               # [m] above the ground
+brake_full_count: 40            # 0x101 brake count from which the deceleration no longer grows (2026-10-08: the same
+#                                 at 40-255; below 40 not measured)
+
+# Sensor mounts, in base_link [m]
+gnss_front_x: 1.041             # front antenna ahead of base_link. Not measured yet (driving data suggest 1.2-1.6)
+gnss_rear_x: -1.041             # rear antenna (negative: behind)
+gnss_z: 0.96
+lidar_x: 1.53
+lidar_y: 0.0
+lidar_z: 0.96
+lidar_pitch_deg: 15.0           # tilted down
