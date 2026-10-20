@@ -16,7 +16,8 @@
   <depend>tf2_ros</depend>
   <depend>diagnostic_msgs</depend>
   <depend>lanelet2</depend>
-  <exec_depend>nift_bringup</exec_depend>
+  <!-- ShuttleConfig and the map origin default -->
+  <exec_depend>nift_common</exec_depend>
   <exec_depend>diagnostic_updater</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

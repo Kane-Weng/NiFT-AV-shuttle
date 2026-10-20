@@ -10,7 +10,7 @@ Description:
   The central orchestration node for the NiFT Shuttle's global navigation.
 
   Responsibilities:
-  - Maintains localization state (GPS/Odometry -> TF -> Lanelet Map).
+  - Maintains localization state (GNSS fix + TF map -> base_link -> Lanelet Map).
   - Listens for Goal Poses from RViz or upstream mission control.
   - Delegates graph searches to the LaneletPlanner.
   - Constructs a continuous, 3-phase path (Entry -> Map Graph -> Exit).
@@ -28,11 +28,11 @@ import lanelet2
 from lanelet2.projection import UtmProjector
 from lanelet2.routing import RoutingGraph
 from lanelet2.traffic_rules import Locations, Participants
-from nav_msgs.msg import Odometry, Path
-# Physical constants: immutable single source of truth
-from nift_bringup.shuttle_config import ShuttleConfig
+from nav_msgs.msg import Path
+# Vehicle facts and the map origin default (nift_common)
+from nift_common.site import MAP_ORIGIN_LAT, MAP_ORIGIN_LON
+from nift_common.vehicle import ShuttleConfig
 import rclpy
-import rclpy.duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
@@ -68,7 +68,6 @@ class WaypointConfig:
     map_origin_lat: float
     map_origin_lon: float
     fix_topic: str
-    odom_topic: str
     map_publish_period_s: float
     path_downsample_stride: int
     planning_min_turn_radius_margin: float
@@ -104,7 +103,6 @@ class WaypointNode(Node):
         # 2. State Initialization
         # ---------------------------------------------------------
         self.fix_count = 0
-        self.odom_count = 0
         self.latest_goal = None
 
         # Current localization states
@@ -124,9 +122,8 @@ class WaypointNode(Node):
         # ---------------------------------------------------------
         # 3. Dynamic Constraints Calculations
         # ---------------------------------------------------------
-        # Ackermann steering geometry
-        self.vehicle_min_turn_radius_m = (
-            self.shuttle.wheel_base / math.tan(self.shuttle.max_steering_angle))
+        # full lock, Ackermann (wheel_base / tan)
+        self.vehicle_min_turn_radius_m = self.shuttle.min_turn_radius
         self.planning_min_turn_radius_m = (
             self.vehicle_min_turn_radius_m * self.config.planning_min_turn_radius_margin)
 
@@ -180,8 +177,6 @@ class WaypointNode(Node):
 
         self.sub_fix = self.create_subscription(
             NavSatFix, self.config.fix_topic, self.fix_callback, qos_profile_sensor_data)
-        self.sub_odom = self.create_subscription(
-            Odometry, self.config.odom_topic, self.odom_callback, 10)
         self.sub_goal = self.create_subscription(PoseStamped, '/goal_pose', self.goal_callback, 10)
         self.sub_initial_pose = self.create_subscription(
             PoseWithCovarianceStamped, '/initialpose', self.initial_pose_callback, 10)
@@ -261,59 +256,6 @@ class WaypointNode(Node):
 
         self.fix_count += 1
 
-    def odom_callback(self, msg: Odometry):
-        """Update the vehicle heading and provides fallback positioning if GNSS fails."""
-        self.vehicle_heading_rad = heading_from_quaternion(msg.pose.pose.orientation)
-        if self.manual_start_selected:
-            return
-
-        # If GNSS is active, rely on TF to get the base_link in the map frame
-        if self.fix_count > 0:
-            try:
-                tf_stamped = self.tf_buffer.lookup_transform(
-                    'map', 'base_link', rclpy.time.Time(),
-                    timeout=rclpy.duration.Duration(seconds=0.05)
-                )
-                self.vehicle_heading_rad = heading_from_quaternion(tf_stamped.transform.rotation)
-            except Exception:
-                pass
-            return
-
-        # Fallback to pure Odometry if TF/GNSS is down
-        try:
-            tf_stamped = self.tf_buffer.lookup_transform(
-                'map', 'base_link', rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=0.05)
-            )
-            start_x = tf_stamped.transform.translation.x
-            start_y = tf_stamped.transform.translation.y
-            self.vehicle_heading_rad = heading_from_quaternion(tf_stamped.transform.rotation)
-        except Exception:
-            start_x = msg.pose.pose.position.x
-            start_y = msg.pose.pose.position.y
-
-        self.latest_map_point_local = lanelet2.core.BasicPoint2d(start_x, start_y)
-        start_x_abs, start_y_abs = self._coord.display_to_lanelet_xy(start_x, start_y)
-        self.latest_start_point_abs = lanelet2.core.BasicPoint2d(start_x_abs, start_y_abs)
-
-        nearest = lanelet2.geometry.findNearest(
-            self.lanelet_map.laneletLayer, self.latest_start_point_abs, 1)
-
-        if len(nearest) == 0:
-            self.latest_start_lanelet = None
-            self.visualizer.publish_start_goal_markers(
-                self.latest_map_point_local, self.latest_goal_point_local)
-            return
-
-        self.latest_start_lanelet = nearest[0][1]
-        self.visualizer.publish_start_goal_markers(
-            self.latest_map_point_local, self.latest_goal_point_local)
-        self.odom_count += 1
-
-        if self.pending_goal_until_start and self.latest_goal is not None:
-            self.pending_goal_until_start = False
-            self._handle_goal(self.latest_goal)
-
     def initial_pose_callback(self, msg: PoseWithCovarianceStamped):
         """Let the user manually override the start position via RViz '2D Pose Estimate'."""
         start_x = msg.pose.pose.position.x
@@ -352,11 +294,34 @@ class WaypointNode(Node):
     # Route Planning Pipeline
     # =========================================================================
 
+    def _refresh_heading_from_tf(self) -> bool:
+        """
+        Take the vehicle heading from TF map -> base_link.
+
+        shuttle_tf_node builds that transform from the GNSS antennas. It is the only
+        heading source, in simulation too: there the transform comes from the emulated
+        GNSS through the same shuttle_tf_node, so GNSS noise and dropouts reach the
+        planner as on the shuttle. The sim's ground-truth odometry is for the evaluation
+        tools only. Returns False when the transform is not available.
+        """
+        try:
+            tf_stamped = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+        except Exception:
+            return False
+        self.vehicle_heading_rad = heading_from_quaternion(tf_stamped.transform.rotation)
+        return True
+
     def _handle_goal(self, msg: PoseStamped):
         """Validate the goal, pick the offroad fallback if needed, and start planning."""
         if self.latest_start_lanelet is None:
             self.pending_goal_until_start = True
             return
+
+        # The off-road path and the entry leg start along the vehicle heading: refresh it now
+        if not self._refresh_heading_from_tf():
+            self.get_logger().warn(
+                'No map -> base_link transform: planning with the last known heading '
+                f'({math.degrees(self.vehicle_heading_rad):.0f} deg from map +x)')
 
         self.visualizer.clear_route_markers()
 
@@ -495,10 +460,10 @@ class WaypointNode(Node):
     def _load_parameters(self) -> WaypointConfig:
         """Load, validate, and return ROS parameters inside a typed WaypointConfig dataclass."""
         self.declare_parameter('map_file', '')
-        self.declare_parameter('map_origin_lat', 42.3005)
-        self.declare_parameter('map_origin_lon', -83.6987)
+        # system.launch.py passes its map_origin_lat
+        self.declare_parameter('map_origin_lat', MAP_ORIGIN_LAT)
+        self.declare_parameter('map_origin_lon', MAP_ORIGIN_LON)
         self.declare_parameter('fix_topic', '/gnss/fix')
-        self.declare_parameter('odom_topic', '/ackermann_like_controller/odom')
         self.declare_parameter('map_publish_period_s', 1.0)
         self.declare_parameter('path_downsample_stride', 5)
         self.declare_parameter('planning_min_turn_radius_margin', 1.10)
@@ -515,7 +480,6 @@ class WaypointNode(Node):
             map_origin_lat=self.get_parameter('map_origin_lat').value,
             map_origin_lon=self.get_parameter('map_origin_lon').value,
             fix_topic=self.get_parameter('fix_topic').value,
-            odom_topic=self.get_parameter('odom_topic').value,
             map_publish_period_s=self.get_parameter('map_publish_period_s').value,
             path_downsample_stride=max(1, int(self.get_parameter('path_downsample_stride').value)),
             planning_min_turn_radius_margin=float(

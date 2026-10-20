@@ -14,8 +14,15 @@ Description:
 import math
 
 from geometry_msgs.msg import Point
+from nift_common.vehicle import ShuttleConfig
 from std_msgs.msg import ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
+
+# The map frame's z = 0 is base_link's height (map -> base_link has z = 0),
+# base_link_height above the road. Markers are drawn relative to the ground so they
+# lie on it in 3D views instead of floating at axle height (and on top of the
+# satellite layer, which sits on the ground).
+GROUND_Z = -ShuttleConfig().base_link_height
 
 
 class WaypointVisualizer:
@@ -74,7 +81,7 @@ class WaypointVisualizer:
             start_marker.header.stamp = stamp
             start_marker.pose.position.x = start_local.x
             start_marker.pose.position.y = start_local.y
-            start_marker.pose.position.z = 0.5
+            start_marker.pose.position.z = GROUND_Z + 0.5
             start_marker.pose.orientation.w = 1.0
             start_marker.scale.x = start_marker.scale.y = start_marker.scale.z = 1.2
             start_marker.color = ColorRGBA(r=0.0, g=1.0, b=0.0, a=1.0)
@@ -88,7 +95,7 @@ class WaypointVisualizer:
             goal_marker.header.stamp = stamp
             goal_marker.pose.position.x = goal_local.x
             goal_marker.pose.position.y = goal_local.y
-            goal_marker.pose.position.z = 0.5
+            goal_marker.pose.position.z = GROUND_Z + 0.5
             goal_marker.pose.orientation.w = 1.0
             goal_marker.scale.x = goal_marker.scale.y = goal_marker.scale.z = 1.2
             goal_marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
@@ -162,7 +169,7 @@ class WaypointVisualizer:
         points = []
         for x_abs, y_abs in pts_abs:
             px, py = self._coord.to_display_xy(x_abs, y_abs)
-            points.append(Point(x=px, y=py, z=0.25))
+            points.append(Point(x=px, y=py, z=GROUND_Z + 0.25))
         m.points.extend(points)
         return m
 
@@ -178,7 +185,7 @@ class WaypointVisualizer:
         points = []
         for x_abs, y_abs in pts_abs:
             px, py = self._coord.to_display_xy(x_abs, y_abs)
-            points.append(Point(x=px, y=py, z=0.25))
+            points.append(Point(x=px, y=py, z=GROUND_Z + 0.25))
         m.points.extend(points)
         return m
 
@@ -190,8 +197,8 @@ class WaypointVisualizer:
             x1, y1 = self._coord.to_display_xy(pt1.x, pt1.y)
             x2, y2 = self._coord.to_display_xy(pt2.x, pt2.y)
             marker.points.extend([
-                Point(x=x1, y=y1, z=0.0),
-                Point(x=x2, y=y2, z=0.0)
+                Point(x=x1, y=y1, z=GROUND_Z + 0.03),
+                Point(x=x2, y=y2, z=GROUND_Z + 0.03)
             ])
 
     def _append_lane_direction_chevron(self, marker, lanelet_obj):
@@ -223,17 +230,17 @@ class WaypointVisualizer:
         apex = Point(
             x=cx + 0.5 * chevron_length * tx,
             y=cy + 0.5 * chevron_length * ty,
-            z=0.05
+            z=GROUND_Z + 0.05
         )
         left_tail = Point(
             x=cx - 0.5 * chevron_length * tx + 0.5 * chevron_width * nx,
             y=cy - 0.5 * chevron_length * ty + 0.5 * chevron_width * ny,
-            z=0.05
+            z=GROUND_Z + 0.05
         )
         right_tail = Point(
             x=cx - 0.5 * chevron_length * tx - 0.5 * chevron_width * nx,
             y=cy - 0.5 * chevron_length * ty - 0.5 * chevron_width * ny,
-            z=0.05
+            z=GROUND_Z + 0.05
         )
 
         # LINE_LIST requires pairs of points (A->B, B->C)

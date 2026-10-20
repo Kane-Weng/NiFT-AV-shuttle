@@ -2,10 +2,8 @@ waypoint_node:
   ros__parameters:
     # --- Map & Localization Settings ---
     map_file: ""                           # Path to the Lanelet2 OSM map file (Required)
-    map_origin_lat: 42.3005                # Map origin latitude (Default centers near Mcity)
-    map_origin_lon: -83.6987               # Map origin longitude
+    # map_origin_lat / _lon: system.launch.py passes its launch arguments (default: nift_common site.py)
     fix_topic: "/gnss/fix"                 # GNSS topic for primary localization
-    odom_topic: "/ackermann_like_controller/odom" # Odometry topic for heading and GNSS fallback
     
     # --- Visualization & Processing ---
     map_publish_period_s: 1.0              # Frequency (in seconds) to publish map markers to RViz
