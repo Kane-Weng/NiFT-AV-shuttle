@@ -42,5 +42,6 @@ jobs:
       - name: Test
         run: |
           source /opt/ros/humble/setup.bash
+          source install/setup.bash  # nift_bringup's tests resolve nift_carla's profile files
           colcon test --event-handlers console_cohesion+
           colcon test-result --verbose
