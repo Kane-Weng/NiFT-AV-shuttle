@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Dark background for map tiles loading state */
+.leaflet-container {
+  background: #1e293b;
+}
+
+/* Cursor changes when in goal-setting mode */
+.goal-mode-active .leaflet-container {
+  cursor: crosshair !important;
+}
