@@ -10,6 +10,8 @@ are recorded.
 from datetime import datetime
 import json
 import math
+import threading
+import time
 from types import SimpleNamespace
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -277,3 +279,36 @@ def test_fault_scenario_from_params_reaches_gnss_fault(make):
     stamps = [datetime.fromisoformat(p['state']['dynamics']['updated']).timestamp()
               for batch in node.rec.octane.items for p in batch]
     assert not any(1.5 <= t < 2.0 - 1e-6 for t in stamps) and any(t >= 2.0 for t in stamps)
+
+
+def test_lockstep_waits_for_the_first_frame(make):
+    """
+    Lockstep holds the tick for the controller's first 0x101 too, not only while ACTIVE.
+
+    trajectory_controller sends nothing while IDLE at startup, so the ECU is NO_COMMAND until its
+    first frame. That frame used to race the next tick and move the shuttle a tick late.
+    """
+    node = make(lockstep=True, lockstep_timeout_s=0.01)
+    node.count_publishers = lambda topic: 1     # the controller is up, still IDLE
+    drive(node, 0.2, send=False)                # before the start each tick waits out the cap
+    assert last_dbw(node)['mode'] == 'no_command' and node._lockstep_first_waits == 4
+    node.lockstep_timeout = 10.0
+    frame = create_command_frame(Gear.FORWARD, 0, 100, 0.0,
+                                 time_msg=node.rec.clock.items[-1].clock)
+    sender = threading.Timer(0.2, node._can_callback, [frame])
+    sender.start()
+    t0 = time.perf_counter()
+    node._tick_once()
+    sender.join()
+    assert 0.15 <= time.perf_counter() - t0 < 5.0      # held for the frame, not for the cap
+    assert last_dbw(node)['mode'] == 'active'          # and drove on it in this tick
+    assert node._lockstep_waits == 0 and node._lockstep_timeouts == 0
+
+
+def test_lockstep_free_runs_without_a_controller(make):
+    """Nothing publishes on the CAN topic, so there is no first frame to wait for."""
+    node = make(lockstep=True, lockstep_timeout_s=10.0)
+    node.count_publishers = lambda topic: 0
+    t0 = time.perf_counter()
+    drive(node, 0.5, send=False)
+    assert time.perf_counter() - t0 < 2.0 and node._lockstep_first_waits == 0

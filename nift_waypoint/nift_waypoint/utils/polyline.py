@@ -117,3 +117,43 @@ def trim_polyline_between_points(polyline, start_point_abs, goal_point_abs, logg
         append_unique_xy(trimmed, *point)
     append_unique_xy(trimmed, *goal_proj['point'])
     return trimmed
+
+
+def polyline_length(polyline):
+    """Return the length of a polyline in metres."""
+    return sum(math.hypot(x2 - x1, y2 - y1)
+               for (x1, y1), (x2, y2) in zip(polyline, polyline[1:]))
+
+
+def polyline_point_at(polyline, arc_length):
+    """
+    Return the point at an arc length along a polyline, and the heading there.
+
+    The arc length is clamped to the polyline. The heading (radians) is that of the segment
+    under the point. It is None when the polyline has no length.
+    """
+    heading = None
+    travelled = 0.0
+    for (x1, y1), (x2, y2) in zip(polyline, polyline[1:]):
+        seg_len = math.hypot(x2 - x1, y2 - y1)
+        if seg_len <= 1e-9:
+            continue
+        heading = math.atan2(y2 - y1, x2 - x1)
+        if travelled + seg_len >= arc_length:
+            t = max(0.0, (arc_length - travelled) / seg_len)
+            return (x1 + t * (x2 - x1), y1 + t * (y2 - y1)), heading
+        travelled += seg_len
+    return polyline[-1], heading
+
+
+def polyline_slice(polyline, start_arc, end_arc):
+    """Return the part of a polyline between two arc lengths, with interpolated end points."""
+    sliced = []
+    append_unique_xy(sliced, *polyline_point_at(polyline, start_arc)[0])
+    travelled = 0.0
+    for (x1, y1), (x2, y2) in zip(polyline, polyline[1:]):
+        travelled += math.hypot(x2 - x1, y2 - y1)
+        if start_arc < travelled < end_arc:
+            append_unique_xy(sliced, x2, y2)
+    append_unique_xy(sliced, *polyline_point_at(polyline, end_arc)[0])
+    return sliced

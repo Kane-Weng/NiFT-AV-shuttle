@@ -4,18 +4,20 @@ waypoint_node:
     map_file: ""                           # Path to the Lanelet2 OSM map file (Required)
     # map_origin_lat / _lon: system.launch.py passes its launch arguments (default: nift_common site.py)
     fix_topic: "/gnss/fix"                 # GNSS topic for primary localization
+    manual_start_max_offset_m: 5.0         # A manual start (/initialpose) holds while GNSS fixes stay within this distance of it
     
     # --- Visualization & Processing ---
     map_publish_period_s: 1.0              # Frequency (in seconds) to publish map markers to RViz
     path_downsample_stride: 5              # Step size for downsampling the final published path points
     
     # --- Routing & Planner Constraints ---
-    planning_min_turn_radius_margin: 1.10  # Multiplier for the Ackermann min turn radius during strict graph planning
-    relaxed_turn_radius_margin: 0.85       # Multiplier for relaxed turn radius checks
-    curvature_check_point_step: 3          # Point step size when validating path curvature
-    max_candidate_routes: 40               # Maximum number of routes the Lanelet2 planner should explore
-    max_search_expansions: 3000            # Maximum graph expansions during route search
-    allow_lane_changes_in_search: false    # Whether the planner is allowed to route across lane changes
+    # The published path gets a turning radius warning, nothing more. The A* search is not called.
+    planning_min_turn_radius_margin: 1.10  # Factor on the Ackermann min turn radius. Lane change S-curves aim for this radius (the A* search would too)
+    relaxed_turn_radius_margin: 0.85       # Not used. Meant for a looser A* retry that does not exist
+    curvature_check_point_step: 3          # Point step size when measuring path curvature (turning radius warning, lane changes)
+    max_candidate_routes: 40               # A* search only (not called). Routes to try before giving up
+    max_search_expansions: 3000            # A* search only (not called). Graph expansions before giving up
+    allow_lane_changes_in_search: false    # A* search only (not called). Whether the search may change lanes
     
     # --- Fallback & Offroad Behavior ---
     offroad_distance_threshold_m: 15.0     # Distance from map to trigger the force-offroad direct routing fallback

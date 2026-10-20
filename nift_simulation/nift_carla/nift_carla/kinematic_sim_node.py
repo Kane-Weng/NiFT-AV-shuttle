@@ -44,6 +44,10 @@ Description:
               full-brake command: the shuttle's measured 0.45 s dead time and braking.
               CARLA's physics hold stops about 10x harder; what the real DBW does is
               unmeasured.
+    lockstep  with lockstep true, each tick first waits (up to lockstep_timeout_s) for the
+              controller's 0x101 for the last /clock. As in the bridge while the ECU is
+              ACTIVE, and here also before the first 0x101 since power-on while something
+              publishes on can_topic, so the first frame is not a tick late.
     world     flat: z = 0, the antennas at datum_alt_m + base_link_height + antenna_z.
     time      sim time starts at 1 s (no stamp is 0, which many ROS APIs read as "unset")
               and moves in whole fixed_delta_seconds steps.
@@ -152,7 +156,7 @@ class KinematicSimNode(Node):
         p('steer.rate_deg_s', 0.0)      # wheel rate limit; 0 = none
         # before each tick, wait for the frame computed from the last /clock
         p('lockstep', False)
-        # wall-clock cap on that wait (only while the ECU is ACTIVE)
+        # wall-clock cap on that wait (_lockstep_wait)
         p('lockstep_timeout_s', 0.1)
         p('antenna_offset_x', SHUTTLE.gnss_front_x)     # front +x, rear -x
         p('antenna_z', SHUTTLE.gnss_z)
@@ -194,6 +198,7 @@ class KinematicSimNode(Node):
             self.datum_alt + float(g('base_link_height')) + float(g('antenna_z'))
         )
         self.gps_divider = max(1, int(g('gps.rate_divider')))
+        self.can_topic = g('can_topic')
         self.odom_frame = g('odom_frame')
         self.base_frame = g('base_frame')
         self.geo = CarlaGeo(float(g('map_origin_lat')), float(g('map_origin_lon')))
@@ -287,6 +292,7 @@ class KinematicSimNode(Node):
         self._lockstep_waits = 0
         self._lockstep_timeouts = 0
         self._lockstep_wait_ms = 0.0    # mean
+        self._lockstep_first_waits = 0  # ticks held for the first 0x101 (NO_COMMAND)
         self._teleport_q: 'queue.Queue[Tuple[float, float, float]]' = queue.Queue()
         self._tick_count = 0
         self._sim_ns = START_NS - self._dt_ns   # the first tick lands on START_NS
@@ -381,7 +387,8 @@ class KinematicSimNode(Node):
             stat.add(
                 'Lockstep',
                 f'{self._lockstep_waits} waits, mean {self._lockstep_wait_ms:.1f} ms, '
-                f'{self._lockstep_timeouts} timeouts',
+                f'{self._lockstep_timeouts} timeouts, '
+                f'{self._lockstep_first_waits} ticks held for the first frame',
             )
         stat.add('Wheelbase', f'{self.car.cfg.wheelbase:.3f} m')
         stat.add('GPS health', 'OK' if self.gnss.ok else 'DROPOUT')
@@ -471,16 +478,28 @@ class KinematicSimNode(Node):
         """
         Hold the tick until the controller's 0x101 for the last /clock has arrived.
 
-        As the bridge does, and only while the ECU is ACTIVE.
+        As the bridge does while the ECU is ACTIVE. Also before the first 0x101 since power-on
+        (NO_COMMAND) while something publishes on the CAN topic. trajectory_controller sends
+        nothing while IDLE at startup, so without this wait its first frame raced the next tick
+        and moved the shuttle a tick late (3 of 23 ROS runs). Until that frame each tick waits
+        out lockstep_timeout_s, so before the start a tick takes at least that long (0.1 s by
+        default, half real time). These waits are counted apart. No wait after a watchdog
+        timeout or an E-stop.
         """
         t0 = time.perf_counter()
         with self._cond:
-            if self.ecu.mode(self._sim_t) != EcuMode.ACTIVE:
+            mode = self.ecu.mode(self._sim_t)
+            first_frame = (mode == EcuMode.NO_COMMAND
+                           and self.count_publishers(self.can_topic) > 0)
+            if mode != EcuMode.ACTIVE and not first_frame:
                 return
             ok = self._cond.wait_for(
                 lambda: self._cmd_stamp_ns >= self._clock_ns or not self._running,
                 timeout=self.lockstep_timeout,
             )
+        if first_frame:
+            self._lockstep_first_waits += 1
+            return
         waited_ms = (time.perf_counter() - t0) * 1000.0
         self._lockstep_waits += 1
         self._lockstep_wait_ms += (waited_ms - self._lockstep_wait_ms) / self._lockstep_waits

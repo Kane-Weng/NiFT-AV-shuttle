@@ -53,7 +53,10 @@ carla_bridge:
                                    #   what it buys is run-to-run determinism, so keep it on when the server
                                    #   is local (costs ~0.1 ms/tick, 0 timeouts measured 2026-10-01).
     lockstep_timeout_s: 0.1        # wall-clock cap per tick; only waits while the ECU is ACTIVE, so a
-                                   #   controller going quiet costs ~10 capped ticks (1 s wall), then free-runs
+                                   #   controller going quiet costs ~10 capped ticks (1 s wall), then free-runs.
+                                   #   kinematic_sim_node also waits before the first 0x101 since power-on while
+                                   #   something publishes on can_topic (that frame raced the next tick), so it
+                                   #   runs at most at 1 tick per cap (0.5x real time) until the first frame
 
     # --- geo: map_origin_lat / _lon = nift_common site.py (launch arg map_origin_lat:= / _lon:=) ---
     datum_alt_m: 0.0

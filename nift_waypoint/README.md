@@ -28,7 +28,7 @@ The repository's [`maps/`](../maps) folder holds `lanelet2_odr2024.osm`, a map w
 
 ### Choosing the start and the goal
 
-- **Start.** Each GNSS fix on `/gnss/fix` is projected into the map frame. RViz's "2D Pose Estimate" (`/initialpose`) can set the start by hand, until the next GNSS fix replaces it.
+- **Start.** Each GNSS fix on `/gnss/fix` is projected into the map frame. RViz's "2D Pose Estimate" (`/initialpose`) can set the start by hand. That manual start holds while GNSS fixes stay within `manual_start_max_offset_m` (5 m) of it, and for good when there is no GNSS. A fix farther away replaces it. So a manual start can correct a GNSS start nearby, but on the shuttle a start far from the shuttle lasts only until the next fix.
 - **Heading.** When a goal arrives, the node reads the shuttle's heading from the TF transform `map → base_link`, which `shuttle_tf_node` in `nift_sensor` builds from the two GNSS antennas. The simulation feeds the same transform through the same node. If the transform is missing, the node logs a warning and plans with the last heading it knew (east before the first one).
 - **Goal.** A pose on `/goal_pose`, from RViz's "2D Goal Pose" or the web dashboard. Only its position is used.
 - Both points snap to their nearest lanelet. If a goal arrives before the start is known, the node keeps it and plans as soon as a start position arrives.
@@ -37,7 +37,7 @@ The repository's [`maps/`](../maps) folder holds `lanelet2_odr2024.osm`, a map w
 
 Lanelet2's routing graph finds the shortest route on the lane graph from the start lanelet to the goal lanelet (`getRoute`, then `shortestPath`). The route respects lane directions and the traffic rules of the map.
 
-`utils/lanelet_planner.py` also has an A\* search that rejects any route whose curvature is tighter than the shuttle's turning circle. The minimum turning radius comes from Ackermann geometry, R = L / tan(δ_max) = 2.082 m / tan(15°) ≈ 7.8 m (`ShuttleConfig.min_turn_radius` in `nift_common`), with a 10% margin. The node does not call this search yet, so the search parameters below have no effect for now.
+The route is not chosen for the turning radius. `utils/lanelet_planner.py` has an A\* search that rejects any route whose curvature is tighter than the shuttle's turning circle, but the node does not call it. The minimum turning radius comes from Ackermann geometry, R = L / tan(δ_max) = 2.082 m / tan(15°) ≈ 7.8 m (`ShuttleConfig.min_turn_radius` in `nift_common`). On the shipped map the A\* search finds no route at all for five of the sim's nine test routes, because their corners are tighter than that (route 11 has a 2 m corner). The node would then fall back to the direct curve that ignores the roads. So the node only checks the finished path and warns (see [Turning radius check](#turning-radius-check)).
 
 ### Building the path
 
@@ -47,11 +47,15 @@ The path has three parts.
 start ──► [entry curve] ──► [lanelet centerlines] ──► [exit curve] ──► goal
 ```
 
-1. **Lanelet centerlines.** The centerlines of the route's lanelets are joined in order. The first one is cut at the point closest to the start and the last one at the point closest to the goal.
+1. **Lanelet centerlines.** The centerlines of the route's lanelets are joined in order. The first one is cut at the point closest to the start and the last one at the point closest to the goal. A lane change is different, because there Lanelet2's route steps to a lanelet beside the current one, not after it. The path keeps to the old lane up to the middle of the side-by-side lanelets and moves across on a cubic S-curve. The S-curve starts and ends along the lanes, 10 m before and after that middle. If it bends tighter than the planning radius (7.8 m × `planning_min_turn_radius_margin`), it is tried longer, up to 30 m each way, as far as the route leaves room.
 2. **Entry curve.** If the start is more than 0.5 m from the first centerline point, a cubic Bezier curve joins them. It leaves the start along the shuttle's heading and arrives along the lane's direction.
 3. **Exit curve.** If the goal is more than 0.5 m from the last centerline point, a second Bezier curve joins them.
 
-Each Bezier curve has `bridge_bezier_pts` segments, and each of its two control handles is 0.7 times the distance between its end points. Finally the whole path is thinned to every `path_downsample_stride`-th point, always keeping the last point, and published in the `map` frame.
+Each Bezier curve has `bridge_bezier_pts` segments, and each of its two control handles is 0.7 times the distance between its end points. The lane change S-curves have a point every metre and handles of a third of that distance, which spreads the move across evenly. Finally the whole path is thinned to every `path_downsample_stride`-th point, always keeping the last point, and published in the `map` frame.
+
+### Turning radius check
+
+Before it publishes a path, the node measures the path's tightest curve. It uses the full path before thinning, curves included, and fits a circle through every three points that are `curvature_check_point_step` apart. Three points that turn straight back count as a radius of 0. If the tightest radius is below the shuttle's full lock radius (7.77 m), the node logs a warning with the place and its diagnostics go to WARN. The path is still published. This is a warning only. The node doesn't look for another route, and the controller still gets the tight curve. Several of the sim's test routes on the shipped map get this warning, for example route 11 with its 2 m corner.
 
 ### Fallback without the map
 
@@ -66,7 +70,8 @@ If even that path is too short to use, the node publishes an empty path, which t
 ### Known limitations
 
 - **Start point.** The start is the front GNSS antenna's position, about 1 m ahead of `base_link`, not the centre of the shuttle.
-- **Lane changes.** If the shortest route contains a lane change, the centerlines of two side-by-side lanelets are joined end to start, so the path turns back on itself near the lane change.
+- **Turning radius.** Only the warning above checks it. A route through a corner tighter than the shuttle can turn is still published, and it is up to the operator to notice.
+- **Where lane changes happen.** A lane change always crosses in the middle of the side-by-side lanelets, whatever the lane markings say there. Close to the start, the goal or another lane change there is less room, so the S-curve is shorter and tighter, and the turning radius check may warn.
 
 ---
 
@@ -106,6 +111,10 @@ ros2 run nift_waypoint waypoint_node --ros-args \
 
 In the full stack the system bringup in `nift_bringup` starts the node and picks the map with its `map_file` launch argument.
 
+### Tests
+
+`colcon test --packages-select nift_waypoint` runs the linters and `test/test_waypoint_planning.py`. Those tests plan on Lanelet2's example map. They cover a route that starts with a lane change, the README demo route, the manual start and the turning radius warning.
+
 ---
 
 ## Topics
@@ -117,7 +126,7 @@ In the full stack the system bringup in `nift_bringup` starts the node and picks
 | `/gnss/fix` | `sensor_msgs/NavSatFix` | Shuttle position (front GNSS antenna) |
 | TF `map → base_link` | tf2 | Heading, read when a goal arrives (from `shuttle_tf_node`, in simulation too) |
 | `/goal_pose` | `geometry_msgs/PoseStamped` | Goal, from RViz or the web dashboard |
-| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | Manual start position (RViz "2D Pose Estimate") |
+| `/initialpose` | `geometry_msgs/PoseWithCovarianceStamped` | Manual start position (RViz "2D Pose Estimate"). It holds while GNSS fixes stay within `manual_start_max_offset_m` of it |
 | `/force_offroad` | `std_msgs/Bool` | Always use the direct Bezier fallback |
 
 
@@ -130,7 +139,7 @@ In the full stack the system bringup in `nift_bringup` starts the node and picks
 | `/navigation_waypoints` | `visualization_msgs/MarkerArray` | The three path parts in different colours |
 | `/start_goal_markers` | `visualization_msgs/MarkerArray` | Start (green) and goal (red) spheres |
 
-The node also reports its state on `/diagnostics` as `Lanelet2 Router`.
+The node also reports its state on `/diagnostics` as `Lanelet2 Router`, with the start source (GNSS or manual) and the tightest curve of the last path. The status is WARN while that curve is tighter than the shuttle can turn.
 
 ---
 
@@ -146,6 +155,7 @@ The defaults are in [`config/waypoint_params.yaml`](config/waypoint_params.yaml)
 | `map_origin_lat` | `42.3005` | Latitude of the `map` frame origin. The default comes from `nift_common/site.py`, and the system bringup passes its own launch argument |
 | `map_origin_lon` | `-83.6987` | Longitude of the `map` frame origin (the same) |
 | `fix_topic` | `/gnss/fix` | GNSS topic |
+| `manual_start_max_offset_m` | `5.0` | A manual start from `/initialpose` holds while GNSS fixes stay within this distance of it. A fix farther away replaces it |
 | `map_publish_period_s` | `1.0` | How often the map markers are republished |
 
 ### Path
@@ -156,16 +166,16 @@ The defaults are in [`config/waypoint_params.yaml`](config/waypoint_params.yaml)
 | `bridge_bezier_pts` | `8` | Segments in each Bezier curve (at least 4) |
 | `offroad_distance_threshold_m` | `15.0` | Goal distance from the map that triggers the direct fallback |
 
-### A\* search (not called yet)
+### Turning radius and the A\* search
 
 | Parameter | Default | Description |
 |---|---|---|
-| `planning_min_turn_radius_margin` | `1.10` | Margin on the minimum turning radius |
-| `relaxed_turn_radius_margin` | `0.85` | A looser margin, not used by the code |
-| `curvature_check_point_step` | `3` | Spacing of the three points used to measure curvature |
-| `max_candidate_routes` | `40` | Routes to try before giving up |
-| `max_search_expansions` | `3000` | Search expansions before giving up |
-| `allow_lane_changes_in_search` | `false` | Whether the search may change lanes |
+| `planning_min_turn_radius_margin` | `1.10` | Margin on the minimum turning radius. Lane change S-curves aim for the radius with this margin. The A\* search would use it too |
+| `curvature_check_point_step` | `3` | Spacing of the three points used to measure curvature, for the turning radius check and the lane change S-curves |
+| `relaxed_turn_radius_margin` | `0.85` | Not used. It was meant for a looser retry of the A\* search |
+| `max_candidate_routes` | `40` | A\* search only (not called). Routes to try before giving up |
+| `max_search_expansions` | `3000` | A\* search only (not called). Search expansions before giving up |
+| `allow_lane_changes_in_search` | `false` | A\* search only (not called). Whether the search may change lanes |
 
 ---
 

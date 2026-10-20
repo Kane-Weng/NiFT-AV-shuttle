@@ -85,7 +85,7 @@ def segment_heading(x1, y1, x2, y2, fallback_rad=0.0):
     return math.atan2(dy, dx)
 
 
-def cubic_bezier_pts(p0, h0, p3, h3, n_pts):
+def cubic_bezier_pts(p0, h0, p3, h3, n_pts, handle_scale=0.70):
     """
     Generate an array of evenly-spaced points along a cubic Bezier curve.
 
@@ -99,6 +99,8 @@ def cubic_bezier_pts(p0, h0, p3, h3, n_pts):
         Tangent headings (radians) at the start and end points.
     n_pts : int
         Number of subdivisions to generate. Output length is n_pts + 1.
+    handle_scale : float, optional
+        Length of each tangent handle as a share of the distance between the endpoints.
 
     """
     dx = p3[0] - p0[0]
@@ -109,7 +111,7 @@ def cubic_bezier_pts(p0, h0, p3, h3, n_pts):
     if dist < 0.1:
         return [p0, p3]
 
-    tangent_scale = dist * 0.70
+    tangent_scale = dist * handle_scale
     c1 = (p0[0] + tangent_scale * math.cos(h0), p0[1] + tangent_scale * math.sin(h0))
     c2 = (p3[0] - tangent_scale * math.cos(h3), p3[1] - tangent_scale * math.sin(h3))
 

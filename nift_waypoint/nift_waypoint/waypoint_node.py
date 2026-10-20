@@ -54,6 +54,7 @@ from .utils import (
     build_offroad_pts_abs,
     CoordTransform,
     downsample_path_points,
+    format_radius,
     heading_from_quaternion,
     LaneletPlanner,
     WaypointVisualizer,
@@ -78,6 +79,7 @@ class WaypointConfig:
     allow_lane_changes_in_search: bool
     offroad_distance_threshold_m: float
     bridge_bezier_pts: int
+    manual_start_max_offset_m: float
 
 
 class WaypointNode(Node):
@@ -116,8 +118,12 @@ class WaypointNode(Node):
         self.latest_goal_point_abs = None
 
         self.pending_goal_until_start = False
-        self.manual_start_selected = False
+        self.manual_start_selected = False  # /initialpose holds the start (initial_pose_callback)
         self.force_offroad = False
+
+        # Tightest curve of the last published path (_check_turn_radius), None without a path
+        self.path_min_radius_m = None
+        self.path_too_tight = False
 
         # ---------------------------------------------------------
         # 3. Dynamic Constraints Calculations
@@ -204,6 +210,10 @@ class WaypointNode(Node):
         stat.add('Map File', self.config.map_file)
         stat.add('GNSS Fix Count', str(self.fix_count))
         stat.add('Force Offroad Enabled', str(self.force_offroad))
+        stat.add('Start Source', 'manual (/initialpose)' if self.manual_start_selected else 'GNSS')
+        tightest = self.path_min_radius_m
+        stat.add('Tightest Curve', 'none' if tightest is None else format_radius(tightest))
+        stat.add('Shuttle Turn Radius', format_radius(self.vehicle_min_turn_radius_m))
 
         if not hasattr(self, 'lanelet_map') or len(self.lanelet_map.laneletLayer) == 0:
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.ERROR,
@@ -211,6 +221,9 @@ class WaypointNode(Node):
         elif self.latest_start_lanelet is None:
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.WARN,
                          'Waiting for valid start location...')
+        elif self.path_too_tight:
+            stat.summary(diagnostic_msgs.msg.DiagnosticStatus.WARN,
+                         'Planned path has a curve tighter than the shuttle can turn')
         else:
             stat.summary(diagnostic_msgs.msg.DiagnosticStatus.OK,
                          'Map loaded and localized to Lanelet network')
@@ -222,14 +235,25 @@ class WaypointNode(Node):
 
     def fix_callback(self, msg: NavSatFix):
         """Update the vehicle's start position using raw GNSS coordinates."""
+        map_point_abs = self.projector.forward(
+            lanelet2.core.GPSPoint(msg.latitude, msg.longitude, msg.altitude))
+
+        # A manual start holds while the fixes stay near it (initial_pose_callback)
         if self.manual_start_selected:
-            return
+            offset = math.hypot(map_point_abs.x - self.latest_start_point_abs.x,
+                                map_point_abs.y - self.latest_start_point_abs.y)
+            if offset <= self.config.manual_start_max_offset_m:
+                self.fix_count += 1
+                return
+            self.manual_start_selected = False
+            self.get_logger().warn(
+                f'GNSS fix is {offset:.1f} m from the manual start, more than '
+                f'manual_start_max_offset_m ({self.config.manual_start_max_offset_m:.1f} m). '
+                'The GNSS fix is the start again')
 
         if self.fix_count == 0:
             self.get_logger().info(f'Received first GPS fix on {self.config.fix_topic}')
 
-        map_point_abs = self.projector.forward(
-            lanelet2.core.GPSPoint(msg.latitude, msg.longitude, msg.altitude))
         display_x, display_y = self._coord.to_display_xy(map_point_abs.x, map_point_abs.y)
 
         self.latest_map_point_local = lanelet2.core.BasicPoint2d(display_x, display_y)
@@ -257,13 +281,25 @@ class WaypointNode(Node):
         self.fix_count += 1
 
     def initial_pose_callback(self, msg: PoseWithCovarianceStamped):
-        """Let the user manually override the start position via RViz '2D Pose Estimate'."""
+        """
+        Let the user manually override the start position via RViz '2D Pose Estimate'.
+
+        The manual start holds while GNSS fixes stay within manual_start_max_offset_m of it, and
+        for good without GNSS. A fix farther away replaces it. So it can correct a GNSS start
+        nearby, while on the shuttle a start far from the shuttle lasts only until the next fix,
+        as before.
+        """
         start_x = msg.pose.pose.position.x
         start_y = msg.pose.pose.position.y
 
         self.latest_map_point_local = lanelet2.core.BasicPoint2d(start_x, start_y)
         start_x_abs, start_y_abs = self._coord.display_to_lanelet_xy(start_x, start_y)
         self.latest_start_point_abs = lanelet2.core.BasicPoint2d(start_x_abs, start_y_abs)
+        self.manual_start_selected = True
+        self.get_logger().info(
+            f'Manual start from /initialpose at map ({start_x:.1f}, {start_y:.1f}). GNSS fixes '
+            f'within {self.config.manual_start_max_offset_m:.1f} m keep it, a fix farther away '
+            'replaces it')
 
         nearest = lanelet2.geometry.findNearest(
             self.lanelet_map.laneletLayer, self.latest_start_point_abs, 1)
@@ -356,6 +392,7 @@ class WaypointNode(Node):
                 path_msg = self._abs_pts_to_path_msg(pts_abs)
 
                 if len(path_msg.poses) >= 2:
+                    self._check_turn_radius(pts_abs)
                     self.path_pub.publish(path_msg)
                     self.visualizer.publish_route_markers_3phase(pts_abs, [], [])
                     return
@@ -383,6 +420,7 @@ class WaypointNode(Node):
                 )
                 path_msg = self._abs_pts_to_path_msg(pts_abs)
                 if len(path_msg.poses) >= 2:
+                    self._check_turn_radius(pts_abs)
                     self.path_pub.publish(path_msg)
                     self.visualizer.publish_route_markers_3phase(pts_abs, [], [])
                     return
@@ -422,15 +460,36 @@ class WaypointNode(Node):
             return
 
         path_msg = self._abs_pts_to_path_msg(sampled_pts)
+        self._check_turn_radius(all_pts_abs)
         self.path_pub.publish(path_msg)
         self.visualizer.publish_route_markers_3phase(entry_pts_abs, lanelet_pts_abs, exit_pts_abs)
 
     def publish_empty_path(self):
         """Send an empty path to halt the controller."""
+        self.path_min_radius_m = None
+        self.path_too_tight = False
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = 'map'
         self.path_pub.publish(path_msg)
+
+    def _check_turn_radius(self, pts_abs):
+        """
+        Warn when a path about to be published has a curve tighter than the shuttle can turn.
+
+        Measures the full path, before thinning, against the full lock radius
+        (ShuttleConfig.min_turn_radius). Only a warning, in the log and in the diagnostics. The
+        path is published anyway, and no other route is searched.
+        """
+        radius, where = self.planner.tightest_curve(pts_abs)
+        self.path_min_radius_m = None if math.isinf(radius) else radius
+        self.path_too_tight = radius < self.vehicle_min_turn_radius_m
+        if self.path_too_tight:
+            x, y = self._coord.to_display_xy(*where)
+            self.get_logger().warn(
+                f'Planned path has a curve of {radius:.1f} m radius near map ({x:.1f}, {y:.1f}), '
+                f'tighter than the shuttle turns at full lock '
+                f'({self.vehicle_min_turn_radius_m:.2f} m). Publishing it anyway')
 
     # =========================================================================
     # Helpers
@@ -474,6 +533,7 @@ class WaypointNode(Node):
         self.declare_parameter('allow_lane_changes_in_search', False)
         self.declare_parameter('offroad_distance_threshold_m', 15.0)
         self.declare_parameter('bridge_bezier_pts', 8)
+        self.declare_parameter('manual_start_max_offset_m', 5.0)
 
         return WaypointConfig(
             map_file=self.get_parameter('map_file').value,
@@ -495,6 +555,8 @@ class WaypointNode(Node):
             offroad_distance_threshold_m=float(
                 self.get_parameter('offroad_distance_threshold_m').value),
             bridge_bezier_pts=max(4, int(self.get_parameter('bridge_bezier_pts').value)),
+            manual_start_max_offset_m=float(
+                self.get_parameter('manual_start_max_offset_m').value),
         )
 
 

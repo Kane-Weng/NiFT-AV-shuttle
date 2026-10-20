@@ -100,7 +100,7 @@ ros2 run nift_carla carla_smoke_test                                            
 | Group | Keys | Notes |
 |---|---|---|
 | connection | `carla_host`, `carla_port`, `carla_timeout_s`, `map_name`, `load_map`, `reconnect_period_s` | the bridge reconnects and respawns after RPC errors |
-| time | `fixed_delta_seconds` (0.05), `time_factor`, `lockstep`, `publish_clock` | `lockstep` holds each tick until the controller's frame for the last `/clock` has arrived |
+| time | `fixed_delta_seconds` (0.05), `time_factor`, `lockstep`, `publish_clock` | `lockstep` holds each tick until the controller's frame for the last `/clock` has arrived, capped at `lockstep_timeout_s`. Both backends wait while the virtual ECU is active. The kinematic backend also waits for the very first frame, so a run never starts a tick late, and runs at half real time until that frame |
 | ego | `ego_blueprint`, `spawn.mode` (`map`, `geo`, `carla_index`), `spawn.x/y/yaw` | launch files override the spawn from the scenario |
 | ECU | `dbw.cmd_timeout_s`, `dbw.steer_sign`, `dbw.plant` (`shuttle` or `carla`), `dbw.steer_map` | |
 | plant | `plant.pedal_map`, `a_lim`, `tau`, `t_eng`, `cmd_delay`, `brake_*` | fitted to a longitudinal test on the shuttle |
