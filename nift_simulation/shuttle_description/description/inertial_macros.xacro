@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!--
+  Inertia of solid shapes with uniform density, about their centre of mass.
+  Box with sides x, y, z:     Ixx = m (y² + z²) / 12, and the other two by symmetry.
+  Cylinder along z, radius r, length l:
+                              Ixx = Iyy = m (3 r² + l²) / 12,  Izz = m r² / 2.
+  The off-diagonal terms are zero because the shapes are aligned with their axes.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <xacro:macro name="inertial_box" params="mass x y z *origin">
+        <inertial>
+            <xacro:insert_block name="origin"/>
+            <mass value="${mass}"/>
+            <inertia ixx="${mass * (y*y + z*z) / 12}" iyy="${mass * (x*x + z*z) / 12}"
+                     izz="${mass * (x*x + y*y) / 12}" ixy="0" ixz="0" iyz="0"/>
+        </inertial>
+    </xacro:macro>
+
+    <xacro:macro name="inertial_cylinder" params="mass length radius *origin">
+        <inertial>
+            <xacro:insert_block name="origin"/>
+            <mass value="${mass}"/>
+            <inertia ixx="${mass * (3*radius*radius + length*length) / 12}"
+                     iyy="${mass * (3*radius*radius + length*length) / 12}"
+                     izz="${mass * radius*radius / 2}" ixy="0" ixz="0" iyz="0"/>
+        </inertial>
+    </xacro:macro>
+
+    <!-- The steering knuckles are frames only. They get a small mass so tools that need
+         an inertia on every moving link accept them. -->
+    <xacro:macro name="inertial_steering_link">
+        <inertial>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <mass value="5.0"/>
+            <inertia ixx="0.05" iyy="0.05" izz="0.05" ixy="0" ixz="0" iyz="0"/>
+        </inertial>
+    </xacro:macro>
+
+    <!-- An invisible visual, for links that only carry a frame. -->
+    <xacro:macro name="virtual">
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+            <geometry><cylinder length="0.01" radius="0.01"/></geometry>
+            <material name="invisible"><color rgba="0 0 0 0"/></material>
+        </visual>
+    </xacro:macro>
+
+</robot>

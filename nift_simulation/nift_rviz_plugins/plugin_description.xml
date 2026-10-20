@@ -1,0 +1,17 @@
+<library path="nift_rviz_plugins">
+  <class name="nift_rviz_plugins/NavPanel" 
+         type="nift_rviz_plugins::NavPanel" 
+         base_class_type="rviz_common::Panel">
+    <description>A panel to trigger the navigation start service.</description>
+  </class>
+
+  <class name="nift_rviz_plugins/TfMonitorPanel" 
+         type="nift_rviz_plugins::TfMonitorPanel" 
+         base_class_type="rviz_common::Panel">
+    <description>Monitors map to base_link transforms.</description>
+  </class>
+
+  <class name="nift_rviz_plugins/NodeCheckerPanel" type="nift_rviz_plugins::NodeCheckerPanel" base_class_type="rviz_common::Panel">
+    <description>Displays system diagnostics and node health.</description>
+  </class>
+</library>

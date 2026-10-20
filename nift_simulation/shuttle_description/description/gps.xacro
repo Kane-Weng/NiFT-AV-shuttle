@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" >
+
+    <xacro:macro name="gps_beacon" params="prefix x_pos topic_name">
+        <joint name="gps_joint_${prefix}" type="fixed">
+            <parent link="chassis"/>
+            <child link="gps_frame_${prefix}"/>
+            <origin xyz="${x_pos} 0 ${veh.gnss_z}" rpy="0 0 0"/>
+        </joint>
+
+        <link name="gps_frame_${prefix}">
+            <visual>
+                <origin xyz="0 0 0.02" rpy="0 0 0"/>
+                <geometry><cylinder radius="0.035" length="0.04"/></geometry>
+                <material name="black"/>
+            </visual>
+            <xacro:inertial_cylinder mass="0.15" length="0.05" radius="0.035">
+                <origin xyz="0 0 0.025" rpy="0 0 0"/>
+            </xacro:inertial_cylinder>
+        </link>
+
+    </xacro:macro>
+
+    <!-- Antenna mounts: nift_common/vehicle.yaml (veh, loaded in vehicle.xacro); shuttle_tf_node uses the same lever arm -->
+    <xacro:gps_beacon prefix="1" x_pos="${veh.gnss_front_x}" topic_name="data_1" />
+    <xacro:gps_beacon prefix="2" x_pos="${veh.gnss_rear_x}" topic_name="data_2" />
+
+</robot>

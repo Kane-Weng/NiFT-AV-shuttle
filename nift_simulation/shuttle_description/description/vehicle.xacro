@@ -1,0 +1,232 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="nift_shuttle">
+  
+    <!-- Include the inertial values from the following -->
+    <xacro:include filename="colors.xacro" />
+    <xacro:include filename="inertial_macros.xacro" />
+
+    <!-- Dimensions: nift_common/vehicle.yaml, the one source (Python reads the same file). lidar.xacro and
+         gps.xacro use veh too. base_link sits mid-wheelbase, base_link_height above the ground. -->
+    <xacro:property name="veh" value="${xacro.load_yaml('$(find nift_common)/config/vehicle.yaml')}" />
+    <xacro:property name="x_base_to_front" value="${veh.wheel_base / 2}" />
+    <xacro:property name="x_base_to_rear" value="${-veh.wheel_base / 2}" />
+    <!-- wheel_tread is the gap between the wheels: the centres are (tread + width) apart -->
+    <xacro:property name="y_base_to_left_wheel" value="${(veh.wheel_tread + veh.wheel_width) / 2}" />
+    <xacro:property name="y_base_to_right_wheel" value="${-(veh.wheel_tread + veh.wheel_width) / 2}" />
+    <xacro:property name="z_base_to_wheel" value="${-(veh.base_link_height - veh.wheel_radius)}" />
+    <xacro:property name="max_steer_angle_central" value="${radians(veh.max_steering_deg)}" />
+    <xacro:property name="wheel_radius" value="${veh.wheel_radius}" />
+    <xacro:property name="wheel_width" value="${veh.wheel_width}" />
+
+    <!-- base_link is the root: shuttle_tf_node publishes map -> base_link, so a parent here would give
+         base_link two parents and cut base_footprint (the ground point below it) off the TF tree -->
+    <link name="base_link">
+    </link>
+
+    <joint name="base_footprint_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="base_footprint"/>
+        <origin xyz="0 0 ${-veh.base_link_height}" rpy="0 0 0"/>
+    </joint>
+
+    <link name="base_footprint"/>
+
+    <joint name="chassis_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="chassis"/>
+        <origin xyz="0 0 0"/>
+    </joint>
+    <!-- Body: simple boxes with the real outer size (vehicle.yaml), no CAD mesh. Heights over the ground:
+         the body floor sits above the wheels, the glass cabin starts at the belt line, and the roof
+         ends at veh.height. The body is centred between the two overhangs, not on base_link. -->
+    <xacro:property name="ground_z" value="${-veh.base_link_height}" />
+    <xacro:property name="body_floor" value="0.475" />
+    <xacro:property name="belt_line" value="1.0" />
+    <xacro:property name="roof_bottom" value="1.83" />
+    <xacro:property name="body_x" value="${(veh.front_overhang - veh.rear_overhang) / 2}" />
+    <xacro:property name="body_front_x" value="${x_base_to_front + veh.front_overhang}" />
+
+    <!-- A wheel drawn on the chassis. The wheel links below have no TF without /joint_states, so their
+         own visuals would not show in the navigation view. -->
+    <xacro:macro name="wheel_visual" params="x y">
+        <visual>
+            <origin xyz="${x} ${y} ${z_base_to_wheel}" rpy="${pi/2} 0 0"/>
+            <geometry>
+                <cylinder length="${wheel_width}" radius="${wheel_radius}"/>
+            </geometry>
+            <material name="dark_grey"/>
+        </visual>
+    </xacro:macro>
+
+    <link name="chassis">
+        <!-- Lower body, floor to belt line -->
+        <visual>
+            <origin xyz="${body_x} 0 ${ground_z + (body_floor + belt_line) / 2}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${veh.length} ${veh.width} ${belt_line - body_floor}"/>
+            </geometry>
+            <material name="white"/>
+        </visual>
+        <!-- Roof, up to the full height -->
+        <visual>
+            <origin xyz="${body_x} 0 ${ground_z + (roof_bottom + veh.height) / 2}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${veh.length} ${veh.width} ${veh.height - roof_bottom}"/>
+            </geometry>
+            <material name="white"/>
+        </visual>
+        <!-- Orange front bumper, so the heading reads at a glance -->
+        <visual>
+            <origin xyz="${body_front_x - 0.025} 0 ${ground_z + body_floor + 0.1}" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.06 ${veh.width} 0.2"/>
+            </geometry>
+            <material name="orange"/>
+        </visual>
+        <xacro:wheel_visual x="${x_base_to_rear}" y="${y_base_to_left_wheel}"/>
+        <xacro:wheel_visual x="${x_base_to_rear}" y="${y_base_to_right_wheel}"/>
+        <xacro:wheel_visual x="${x_base_to_front}" y="${y_base_to_left_wheel}"/>
+        <xacro:wheel_visual x="${x_base_to_front}" y="${y_base_to_right_wheel}"/>
+        <!-- Collision: the body above the wheels (z 0.475 to 1.83 m over the ground), URDF-only shape -->
+        <collision>
+            <geometry>
+                <box size="${veh.length} ${veh.width} 1.355"/>
+            </geometry>
+            <origin xyz="0 0 0.20"/>
+        </collision>
+        <!-- Inertia: the full box, centred at the CoG height -->
+        <xacro:inertial_box mass="${veh.mass}" x="${veh.length}" y="${veh.width}" z="${veh.height}">
+            <origin xyz="0 0 ${veh.cog_height - veh.base_link_height}" rpy="0 0 0"/>
+        </xacro:inertial_box>
+    </link>
+
+    <!-- Smoked glass cabin, belt line to roof. A link of its own because RViz applies one alpha to every
+         visual of a link (the colour's alpha), and only the glass should be see-through. -->
+    <joint name="chassis_glass_joint" type="fixed">
+        <parent link="chassis"/>
+        <child link="chassis_glass"/>
+        <origin xyz="0 0 0"/>
+    </joint>
+    <link name="chassis_glass">
+        <visual>
+            <origin xyz="${body_x} 0 ${ground_z + (belt_line + roof_bottom) / 2}" rpy="0 0 0"/>
+            <geometry>
+                <box size="${veh.length} ${veh.width} ${roof_bottom - belt_line}"/>
+            </geometry>
+            <material name="smoked_glass"/>
+        </visual>
+    </link>
+
+    <!-- Wheel links: collision and inertia only. Their visuals are drawn on the chassis (see wheel_visual). -->
+
+    <!-- ================================================ -->
+    <!-- LEFT BACK WHEEL -->
+    <joint name="left_back_wheel_joint" type="continuous">
+        <parent link="chassis"/>
+        <child link="left_back_wheel"/>
+        <origin xyz="${x_base_to_rear} ${y_base_to_left_wheel} ${z_base_to_wheel}" rpy="-${pi/2} 0 0"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="0.2" friction="0.2"/> 
+        <limit effort="1000.0" velocity="25.0"/>
+    </joint>
+    <link name="left_back_wheel">
+        <collision>
+            <geometry>
+                <cylinder length="${wheel_width}" radius="${wheel_radius}" />
+            </geometry>
+        </collision>
+        <xacro:inertial_cylinder mass="10" length="${wheel_width}" radius="${wheel_radius}">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:inertial_cylinder>
+    </link>
+
+    <!-- ================================================ -->
+    <!-- RIGHT BACK WHEEL -->
+    <joint name="right_back_wheel_joint" type="continuous">
+        <parent link="chassis"/>
+        <child link="right_back_wheel"/>
+        <origin xyz="${x_base_to_rear} ${y_base_to_right_wheel} ${z_base_to_wheel}" rpy="-${pi/2} 0 0"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="0.2" friction="0.2"/> 
+        <limit effort="1000.0" velocity="25.0"/>
+        <mimic joint="left_back_wheel_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+    <link name="right_back_wheel">
+        <collision>
+            <geometry>
+                <cylinder length="${wheel_width}" radius="${wheel_radius}" />
+            </geometry>
+        </collision>
+        <xacro:inertial_cylinder mass="10" length="${wheel_width}" radius="${wheel_radius}">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:inertial_cylinder>
+    </link>
+
+    <!-- ================================================ -->
+    <!-- LEFT STEERING LINK -->
+    <link name="front_left_steering_link">
+        <xacro:virtual/>
+        <xacro:inertial_steering_link/>
+    </link>
+    <joint name="front_left_steering_joint" type="revolute">
+        <parent link="chassis"/>
+        <child link="front_left_steering_link"/> 
+        <origin xyz="${x_base_to_front} ${y_base_to_left_wheel} ${z_base_to_wheel}" rpy="${pi/2} 0 0" />
+        <axis   xyz="0 1 0" />
+        <limit  lower="-${max_steer_angle_central}"  upper="${max_steer_angle_central}"  effort="50.0"  velocity="5" />
+        <dynamics damping="0.2"/>
+    </joint>
+
+    <!-- LEFT FRONT WHEEL -->
+    <joint name="left_front_wheel_joint" type="continuous">
+        <parent link="front_left_steering_link"/>
+        <child link="left_front_wheel"/>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <axis   xyz="0 0 1" />
+    </joint>
+    <link name="left_front_wheel">
+        <collision>
+            <geometry>
+                <cylinder length="${wheel_width}" radius="${wheel_radius}" />
+            </geometry>
+        </collision>
+        <xacro:inertial_cylinder mass="10" length="${wheel_width}" radius="${wheel_radius}">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:inertial_cylinder>
+    </link>
+
+    <!-- ================================================ -->
+    <!-- RIGHT STEERING LINK -->
+    <link name="front_right_steering_link">
+        <xacro:virtual/>
+        <xacro:inertial_steering_link/>
+    </link>
+    <joint name="front_right_steering_joint" type="revolute">
+        <parent link="chassis"/>
+        <child link="front_right_steering_link"/> 
+        <origin xyz="${x_base_to_front} ${y_base_to_right_wheel} ${z_base_to_wheel}" rpy="${pi/2} 0 0" />
+        <axis   xyz="0 1 0" />
+        <limit  lower="-${max_steer_angle_central}"  upper="${max_steer_angle_central}"  effort="50.0"  velocity="5" />
+        <dynamics damping="0.2"/>
+        <mimic joint="front_left_steering_joint" multiplier="1.0" offset="0.0"/>
+    </joint>
+
+    <!-- RIGHT FRONT WHEEL -->
+    <joint name="right_front_wheel_joint" type="continuous">
+        <parent link="front_right_steering_link"/>
+        <child link="right_front_wheel"/>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <axis   xyz="0 0 -1" />
+    </joint>
+    <link name="right_front_wheel">
+        <collision>
+            <geometry>
+                <cylinder length="${wheel_width}" radius="${wheel_radius}" />
+            </geometry>
+        </collision>
+        <xacro:inertial_cylinder mass="10" length="${wheel_width}" radius="${wheel_radius}">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:inertial_cylinder>
+    </link>
+
+</robot>

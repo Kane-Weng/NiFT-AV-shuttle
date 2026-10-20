@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="nift_shuttle">
+
+    <xacro:include filename="vehicle.xacro" />
+    <xacro:include filename="lidar.xacro" />
+    <xacro:include filename="gps.xacro" />
+
+</robot>

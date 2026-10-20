@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" >
+    <!-- Mount: nift_common/vehicle.yaml (veh, loaded in vehicle.xacro); positive pitch = tilted down -->
+    <xacro:property name="laser_tilt" value="${radians(veh.lidar_pitch_deg)}" />
+
+    <joint name="laser_joint" type="fixed">
+        <parent link="chassis"/>
+        <child link="velodyne"/>
+        <origin xyz="${veh.lidar_x} ${veh.lidar_y} ${veh.lidar_z}" rpy="0 ${laser_tilt} 0"/>
+    </joint>
+
+    <link name="velodyne">
+        <visual>
+            <geometry>
+                <cylinder radius="0.05" length="0.04"/>
+            </geometry>
+            <material name="black"/>
+        </visual>
+        <collision>
+            <geometry>
+                <cylinder radius="0.05" length="0.04"/>
+            </geometry>
+        </collision>
+        <xacro:inertial_cylinder mass="0.2" length="0.04" radius="0.05">
+            <origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:inertial_cylinder>
+    </link>
+
+
+</robot>
