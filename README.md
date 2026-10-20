@@ -4,7 +4,9 @@
 
 This is the ROS 2 software stack for the **NiFT autonomous shuttle**, a low-speed self-driving shuttle that we develop and test at [Mcity](https://mcity.umich.edu/), the University of Michigan's proving ground for automated vehicles. It takes the shuttle from raw sensor data to drive-by-wire CAN commands. Two RTK GNSS antennas give the position and heading, and a LiDAR finds obstacles. A Lanelet2 route planner draws a smooth path. Pure Pursuit steers, an ADRC controller holds the speed, and safety filters slow or stop the shuttle near obstacles. The simulator replaces only the hardware (the GNSS server, the LiDAR and the drive-by-wire ECU), so the code we test in simulation is the code that drives the shuttle. A web dashboard and RViz panels let an operator watch and control it.
 
-<!-- Demo GIF / video goes here (ledger unit U10). -->
+**[Try it in your browser](https://kane-weng.github.io/nift_playground/).** The web playground runs our own ROS 2 nodes in the page, on a small fake ROS, with nothing to install. Set a goal, start the shuttle, cut its GNSS and watch the real controller react.
+
+[![The shuttle driving a route in the web playground, with the 3D test site shown](.github/media/playground.gif)](https://kane-weng.github.io/nift_playground/)
 
 ## How it fits together
 
@@ -30,6 +32,7 @@ GNSS + LiDAR ──► nift_sensor ──► nift_waypoint ──► nift_contro
 | `nift_rviz_plugins` | Three RViz panels: navigation controls, TF monitor and system health | [README](nift_simulation/nift_rviz_plugins/README.md), [wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/nift_rviz_plugins) |
 | `nift_carla` | Two simulator backends behind the same CAN and GNSS interfaces: a CARLA bridge and a kinematic model that needs no GPU | [README](nift_simulation/nift_carla/README.md), [wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/nift_carla) |
 | `maps/` | The Lanelet2 map the simulation drives on, with its license notice | [README](maps/README.md) |
+| `nift_playground` | The simulation in a web page: our nodes on a fake ROS in the browser, with an optional 3D view of the test site (not a ROS package) | [README](nift_playground/README.md), [wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/Web-Playground) |
 
 `shuttle_description`, `nift_rviz_plugins` and `nift_carla` live in [`nift_simulation/`](nift_simulation/README.md).
 
@@ -66,9 +69,15 @@ The wiki's [Getting Started](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki/G
 
 The [project wiki](https://github.com/Kane-Weng/NiFT-AV-shuttle/wiki) explains each package and node in depth. It also covers the background for engineers new to autonomous vehicles: the hardware (CAN, LiDAR, GNSS), the middleware (ROS 2, Linux) and the algorithms (localization, planning, control, simulation).
 
-## Author
+## My role
 
-**Kane Weng** designed and wrote the autonomy software stack.
+I'm Kane Weng. I lead the NiFT shuttle team, and I designed and wrote this autonomy stack.
+
+- **Team lead:** I lead the whole team.
+- **System planning and integration:** I plan the system and integrate its packages into one stack that runs on the shuttle and in simulation.
+- **Research:** I research autonomous vehicle stacks and their algorithms.
+- **ROS workspace:** I set up the ROS 2 workspace and its package layout.
+- **Code:** I implement and maintain the code, and I run its version control.
 
 ## Acknowledgements
 
