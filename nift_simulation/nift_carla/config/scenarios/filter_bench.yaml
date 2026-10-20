@@ -1,0 +1,75 @@
+# Safety-filter bench on the digital twin of the test track (CARLA).
+#
+# Same schema as the former Gazebo bench scenario — positions are
+# NiFT map-frame metres (origin = map datum 42.3005 N, -83.6987 W, UTM 17N grid)
+# — but placed on a REAL track road: the 239 m straight lanelet chain
+# 46138 -> 57867 -> 46642 -> 53355 -> 46999 of an earlier, unpublished map, heading
+# south (yaw -1.6123 rad). Found with:
+#   ros2 run nift_carla carla_pick_spawn --straight-min 70
+#
+# Waypoints are CARLA's own lane centre (road 85, lane -2; from `carla_pick_spawn`-style
+# walk of Map.get_waypoint().next(10)), which lies 0.4 m from the lanelet-46138
+# centerline — the two maps agree here (elsewhere they don't; see README).
+# Obstacle distances along the path mirror the Gazebo bench (35 / 42 / 52 m) so
+# the expected filter behaviour is the same:
+#   distance_stop    -> hard stop ~7 m before pedestrian_ahead
+#   cbf              -> smooth deceleration, halts before pedestrian_ahead
+#   potential_field  -> steers right around pedestrian_ahead, may meet bollard_right
+#
+# CARLA blueprint mapping (nift_carla/carla_scenario_node.py):
+#   cylinder length >= 1.5  -> walker.pedestrian.*      (add walk_to: [x, y] + speed for a crossing)
+#   cylinder otherwise      -> static.prop.trafficcone01
+#   box size[0] >= 1.5      -> vehicle.* parked (physics frozen), `yaw` = heading (map frame, rad)
+#   box otherwise           -> static.prop.box01
+#   blueprint: <id>         -> explicit override;  lat/lon may replace x/y
+
+spawn_pose:
+  x:   100.94
+  y:   162.66
+  z:   0.5
+  yaw: -1.612000      # rad — along the lane, heading south
+
+waypoints:            # CARLA lane centre (road 85, lane -2), every 10 m, 80 m run
+  - [100.94, 162.66]  # spawn (CARLA road 85, lane -2 centre)
+  - [100.53, 152.66]
+  - [100.12, 142.67]
+  - [ 99.71, 132.68]  # last clear point — filter engages ~7 m later
+  - [ 99.30, 122.68]  # through pedestrian_ahead
+  - [ 98.89, 112.69]  # through bollard_right lateral zone
+  - [ 98.48, 102.69]  # through parked_car_left lateral zone
+  - [ 98.07,  92.70]
+  - [ 97.66,  82.71]  # end of run
+
+obstacles:
+
+  # Primary trigger — dead centre in the lane, 35 m from spawn.
+  - name:   pedestrian_ahead
+    shape:  cylinder
+    radius: 0.2
+    length: 1.8
+    x:      99.50
+    y:      127.69
+    z:      0.9
+    color:  [0.90, 0.15, 0.15, 1.0]
+    # walk_to: [96.0, 131.7]   # uncomment for a 1 m/s crossing pedestrian
+    # speed:   1.0
+
+  # Secondary trigger — 1.8 m right of the lane centre, 42 m out.
+  - name:   bollard_right
+    shape:  cylinder
+    radius: 0.12
+    length: 0.9
+    x:      97.41
+    y:      120.77
+    z:      0.45
+    color:  [1.00, 0.55, 0.00, 1.0]
+
+  # Tertiary trigger — parked car 1.8 m left of the lane centre, 52 m out.
+  - name:   parked_car_left
+    shape:  box
+    size:   [1.8, 0.9, 1.4]
+    x:      100.60
+    y:      110.63
+    z:      0.7
+    yaw:    -1.612000   # parked along the road
+    color:  [0.55, 0.55, 0.60, 1.0]

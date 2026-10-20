@@ -1,0 +1,146 @@
+# Parameters for nift_carla/carla_bridge_node (and kinematic_sim_node, which reads this section too).
+# The shuttle's facts are not repeated here: mass, steering limit, governor, brake saturation count and the sensor
+# mounts default to nift_common vehicle.yaml (which the URDF loads too, so the TF tree matches where the sim samples
+# the sensors), the map origin to nift_common site.py. Set one here only to override it.
+carla_bridge:
+  ros__parameters:
+    # --- connection / world -------------------------------------------------
+    carla_host: "localhost"        # override with -p carla_host:=<gpu-host-ip>
+    carla_port: 2000
+    carla_timeout_s: 120.0         # first load of the twin's world can take > 60 s
+    map_name: "McityMap_Main"      # the world name inside the digital twin content (its own name)
+    load_map: true
+    reconnect_period_s: 2.0
+    fixed_delta_seconds: 0.05      # 20 Hz simulation tick, bridge is the /clock source
+    time_factor: 1.0               # 1.0 = real time, 0.0 = as fast as the server allows
+    max_substeps: 10
+    max_substep_delta: 0.01
+    publish_clock: true
+    spectator_follow: false
+    collision_sensor: true         # log + count ego collisions (diagnostics)
+
+    # --- CAN in the loop ----------------------------------------------------
+    # trajectory_controller's 0x101 / 0x100 frames on can_topic drive the ego through the
+    # virtual ECU (carla_dbw.py); its state is on /carla/dbw_state.
+    dbw:
+      cmd_timeout_s: 0.5           # no 0x101 for this long -> full brake + hand brake
+      steer_sign: -1.0             # CAN +steer = left (ROS), CARLA +steer = right (FL wheel -15 deg at +15, 2026-09-24)
+      plant: "shuttle"             # shuttle = the shuttle's speed-command plant below (shuttle_plant.py);
+                                   #   carla = pedal / brake as CARLA throttle / brake on the vehicle.* powertrain
+      steer_map: true              # steer the ego on the shuttle's turning circle: a steer command is turned into the
+                                   #   inner-wheel angle for the ego's measured wheelbase / track (carla_dbw.inner_wheel_deg);
+                                   #   the bridge sets the wheel limit to full shuttle lock (Micra: 19.4 deg for 15 deg).
+                                   #   false = the ego turns on its own geometry (Micra 9.98 m at full lock vs 7.77 m)
+    # Shuttle longitudinal plant, fitted to the garage test of 2026-10-08 (longitudinal_test bag
+    # longtest_20261008_172401). The pedal is a speed command; the brake a deceleration.
+    plant:
+      pedal_map: [0.0, 0.46, 40.0, 0.635, 70.0, 0.83, 100.0, 1.035, 140.0, 1.275]
+                                   # count, steady m/s, ... (uphill pad): linear between, extrapolated above;
+                                   #   pedal 0 with the brake off = creep at 0.46 m/s, not a coast
+      a_lim: 0.6                   # motor loop: dv/dt = clip((v_cmd - v) / tau, +-a_lim)  [m/s^2]
+      tau: 0.6                     #   [s]
+      t_eng: 1.7                   # brake release -> drive engaged from standstill, whatever the pedal [s]
+      cmd_delay: 0.45              # 0x101 change -> speed, pedal and brake alike [s]
+      brake_a0: 0.72               # brake decel = brake_a0 + brake_k_v * v, at least brake_a_min [m/s^2];
+      brake_k_v: -0.15             #   independent of the count from 40 to 255 (saturates early); stops from
+      brake_a_min: 0.3             #   0.45 m/s averaged 0.65, brake 255 from 1.06 m/s 0.6, brake 80 from 1.8 m/s 0.59
+      # max_speed (governor) = vehicle.yaml max_speed; brake_full (count from which the brake is all there,
+      #   proportional below; not measured) = vehicle.yaml brake_full_count
+    lockstep: true                 # each tick waits for the controller's frame for the last /clock:
+                                   #   same command timing on every run (cmd age always 0). Frames must be
+                                   #   stamped with sim time, as trajectory_controller does.
+                                   #   NOT a network workaround: it was added after the 2026-09 WiFi lag, but
+                                   #   what it buys is run-to-run determinism, so keep it on when the server
+                                   #   is local (costs ~0.1 ms/tick, 0 timeouts measured 2026-10-01).
+    lockstep_timeout_s: 0.1        # wall-clock cap per tick; only waits while the ECU is ACTIVE, so a
+                                   #   controller going quiet costs ~10 capped ticks (1 s wall), then free-runs
+
+    # --- geo: map_origin_lat / _lon = nift_common site.py (launch arg map_origin_lat:= / _lon:=) ---
+    datum_alt_m: 0.0
+
+    # --- ego vehicle --------------------------------------------------------
+    # Pick the blueprint closest to the shuttle's wheel_base using
+    # `ros2 run nift_carla carla_smoke_test` (blueprint survey step).
+    # Blueprint survey on the GPU host (2026-09-07): nissan.micra is the closest
+    # stock car (wheelbase 2.490 m vs NiFT 2.082, L 3.63 x W 1.85 m). Pure Pursuit still assumes
+    # 2.082 m, so expect slightly wider turns than commanded; front wheels are limited to 15 deg.
+    # the shuttle itself needs the source-built image (nift/carla-shuttle, source_build/README.md);
+    # a stock CARLA server (e.g. nift/carla-twin) needs ego_blueprint:=vehicle.nissan.micra
+    ego_blueprint: "vehicle.nift.shuttle"
+    ego_role_name: "ego"
+    spawn:
+      mode: "map"                  # map | geo | carla_index
+      # Default: start of the 239 m straight lanelet chain 46138 -> 46999 (heading south),
+      # found with `ros2 run nift_carla carla_pick_spawn --straight-min 70`.
+      # system.launch.py overrides this from the scenario's spawn_pose (or spawn_x/_y/_yaw).
+      x: 101.52                    # map frame (m)
+      y: 162.66
+      yaw: -1.612                  # rad
+      lat: 0.0
+      lon: 0.0
+      heading_deg: 0.0
+      index: 0
+      z_offset: 0.3
+
+    vehicle:
+      # With dbw.plant: shuttle the powertrain below only acts in the hold modes (power-on, watchdog, E-stop:
+      # brake torque); the speed itself comes from plant.* above. It is the whole plant with dbw.plant: carla.
+      # mass = vehicle.yaml mass; max_steer_angle_deg (front-wheel limit) = vehicle.yaml max_steering_deg, so
+      #   steer = +-1 is full lock (dbw.steer_map false only; with the map the bridge computes the limit from the
+      #   ego's geometry). 0 keeps the blueprint's 70 deg; the ECU scales by whatever the server reports
+      # Powertrain shaped to ShuttleConfig with `carla_step_response` (2026-09-24, slope-corrected):
+      # full pedal from rest 0.82 m/s^2 (target 0.8), full brake 7.0 m/s^2 (target 7), top speed ~5.9 m/s,
+      # pedal -> accel ~linear, coasting ~0.24 m/s^2.  The stock Micra: 2.9 m/s^2 at full pedal, but part
+      # pedal plateaued (0.31 -> ~1 m/s) because of its 2.0 zero-throttle engine damping.  0 / -1 / false = keep.
+      engine_torque_nm: 65.0       # flat torque curve up to max_rpm
+      max_rpm: 700.0               # with one gear and final_ratio 4.214: ~5.9 m/s top speed
+      final_ratio: 0.0             # keep the Micra's 4.214
+      single_gear: true            # single-speed like the shuttle's motor: no shift pauses
+      engine_damping: 0.15         # same at every pedal position (the Micra's full-throttle value)
+      brake_torque_nm: 395.0       # per wheel at brake 255 (the Micra's 550 gives 9.7 m/s^2 sustained)
+
+    # --- sensors -------------------------------------------------------------
+    # antenna_offset_x (antennas at +-x), antenna_z, base_link_height, lidar.x / y / z / pitch_deg = vehicle.yaml
+    #   gnss_front_x, gnss_z, base_link_height, lidar_* (pitch_deg in the UE sign: -lidar_pitch_deg = nose down)
+    lidar:
+      min_range: 0.3
+      range: 12.0
+      channels: 8
+      h_samples: 180
+      h_fov_deg: 180.0
+      v_fov_deg: 15.0
+      noise_stddev: 0.0
+      publish_divider: 2           # 20 Hz ticks / 2 = 10 Hz /scan
+      wait_s: 0.04                 # wait for the frame's LiDAR packet before publishing
+    gps:
+      rate_divider: 1              # publish every tick (20 Hz)
+      noise_stddev_m: 0.0          # 0.8 m mimics RTK degradation
+      noise_heading: false
+      dropout_period_s: 0.0        # e.g. 10.0 with duration 1.0 = 1 s blackout every 10 s
+      dropout_duration_s: 0.0
+      seed: 0                      # 0 = a new random run each time
+      feed:                        # sim_gnss.py FeedConfig: the real Octane feed as measured on the shuttle (10 Hz
+        enabled: false             #   positions behind a ~16 Hz relay, relay-time stamps, gaps in bad-link spells,
+        latency_s: 0.0             #   held positions delivered late after a gap, out-of-order, cm noise). false =
+                                   #   ideal feed (every tick, exact). Every field
+                                   #   not set here keeps the fit (gps.feed.<field> overrides one); latency_s, the
+                                   #   measurement -> Octane delay, is unknown on the shuttle
+      # dead_zones: [lat_min, lat_max, lon_min, lon_max, ...]   nothing is sent while base_link is inside a box
+      #   (Wi-Fi dead spots), /carla/gps_health false meanwhile. Leave it out for none: launch_ros rejects [].
+      faults: ''                   # scheduled GNSS faults (sim_gnss.py GnssFault) as a YAML list; normally set by the
+                                   #   launch arg gnss_faults:=<scenario of gnss_faults.yaml>; starts / ends on
+                                   #   /carla/gnss_fault
+    octane:                        # octane_emulator.py: GNSS served as the Octane server does (beacon_update)
+      port: 8765                   # system.launch.py gives beacon_node this port, key and IDs
+      api_key: "sim"
+      namespace: "/octane"
+      front_id: "SIM-FRONT"        # deliberately not the shuttle's beacon IDs
+      rear_id: "SIM-REAR"
+
+    # --- topics -------------------------------------------------------------
+    can_topic: "/to_can_bus"
+    odom_topic: "/ackermann_like_controller/odom"
+    odom_frame: "map"
+    base_frame: "base_link"
+    scan_topic: "/scan"
+    scan_frame: "velodyne"

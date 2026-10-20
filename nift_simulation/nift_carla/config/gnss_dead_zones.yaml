@@ -1,0 +1,19 @@
+# Named GNSS dead-zone sets for the sim: gnss_dead_zones:=<name>[,<name>...] (system.launch.py, or the nift_carla
+# launch files). Each set is a list of boxes [lat_min, lat_max, lon_min, lon_max]; while base_link is inside one,
+# the sim GNSS sends nothing (sim_gnss.py dead_zones) and /carla/gps_health is false.
+#
+# The beacons reach Octane over Wi-Fi only, and the track has Wi-Fi dead spots at its north and south extremes
+# (downtown and the east straight are fine). The north_end and south_end boxes are ROUGH: the whole north end (y >= 180 m in the
+# map frame: north loop top, north-east pad) and the whole south end (y <= -95 m: south-east loop, south-west
+# roundabout, south perimeter). Replace them with the measured spots after a recorded drive of the track.
+sets:
+  north_end:
+    - [42.302096, 42.303076, -83.699777, -83.696345]
+  south_end:
+    - [42.298948, 42.299702, -83.699633, -83.696211]
+  # Test boxes: GNSS lost just after the shuttle has turned 15 deg into the turn of a test route (test_routes.yaml),
+  # covering the rest of the turn. Shows what a GNSS stop does mid-turn. From the path the 2025 sim map plans.
+  route03_turn:                    # left turn, from map (4.9, -6.8), path s 36.5 m
+    - [42.3003059, 42.3004479, -83.6987105, -83.6982981]
+  route04_turn:                    # right turn, from map (51.1, 41.7), path s 63.0 m
+    - [42.3006466, 42.3009479, -83.6980988, -83.6978979]

@@ -1,0 +1,31 @@
+--- DefaultGame.ini.orig	2026-10-13 17:04:48.226047720 -0400
++++ DefaultGame.ini	2026-10-13 17:05:33.518625392 -0400
+@@ -49,19 +49,8 @@
+ bEncryptIniFiles=False
+ bEncryptPakIndex=False
+ bSkipEditorContent=False
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town01")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town01_Opt")
+++MapsToCook=(FilePath="/Game/McityMap/McityMap_Main")
+ +MapsToCook=(FilePath="/Game/Carla/Maps/Town02")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town02_Opt")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town03")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town03_Opt")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town04")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town04_Opt")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town05")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town05_Opt")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town10HD")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/Town10HD_Opt")
+-+MapsToCook=(FilePath="/Game/Carla/Maps/OpenDriveMap")
+ +MapsToCook=(FilePath="/Game/Carla/Maps/TestMaps/EmptyMap")
+ +DirectoriesToAlwaysCook=(Path="Carla/Static/GenericMaterials/Licenseplates/Textures")
+ +DirectoriesToAlwaysCook=(Path="Carla/Static/Car/4Wheeled/ParkedVehicles")
+@@ -69,5 +58,7 @@
+ +DirectoriesToAlwaysStageAsUFS=(Path="Carla/Maps/Nav")
+ +DirectoriesToAlwaysStageAsUFS=(Path="Carla/Maps/TM")
+ +DirectoriesToAlwaysStageAsUFS=(Path="Carla/Config")
+++DirectoriesToAlwaysStageAsUFS=(Path="McityMap/OpenDrive")
+++DirectoriesToAlwaysStageAsUFS=(Path="McityMap/Nav")
+ bNativizeBlueprintAssets=False
+ bNativizeOnlySelectedBlueprints=False

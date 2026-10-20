@@ -1,0 +1,158 @@
+# GNSS fault scenarios for the sim (fault-injection bench): gnss_faults:=<name> (system.launch.py, or the nift_carla
+# launch files). Each scenario: the test route it is placed on (test_routes.yaml), the faults (sim_gnss.py GnssFault:
+# kind, antenna, one trigger — t_s sim time / at_m distance driven / box, a lat/lon box or a dead-zone set name from
+# gnss_dead_zones.yaml — duration_s, parameters), optional backend_params (antenna_offset_x: where the sim puts the
+# antennas while the stack keeps its own gnss.offset_x, for the lever-arm cases), and the target the stack should
+# meet (pass criteria, PROPOSED — thresholds are a team decision):
+#   stop: false = drives on (no SAFE_STOP) / true = a controlled stop is the right answer
+#   max_error_m: pose error (stack's map -> base_link vs ground truth) during and after the fault
+#   max_heading_error_deg, max_cte_m: as named
+# Placement: "straight" = route 01 (230 m southbound straight) from 40 m driven, past the start-up; east is lateral
+# there. "turn" = route 04's right turn: the fault starts when base_link enters route04_turn (15 deg into the turn).
+scenarios:
+  # --- controls: no fault (the error floor of the pipeline itself) ------------------------------------------------
+  control_straight:
+    route: '01'
+    faults: []
+    target: {stop: false, max_error_m: 0.10}
+  control_turn:
+    route: '04'
+    faults: []
+    target: {stop: false, max_error_m: 0.10}
+  # --- dropouts: no fixes ---------------------------------------------------------------------------------------
+  dropout_0.3s_straight:
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 0.3}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_0.8s_straight:
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 0.8}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_1.5s_straight:
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 1.5}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_3s_straight:
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 3.0}]
+    target: {stop: true, max_error_m: 0.50}
+  dropout_10s_straight:
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 10.0}]
+    target: {stop: true, max_error_m: 0.50}
+  dropout_0.3s_turn:
+    route: '04'
+    faults: [{kind: dropout, box: route04_turn, duration_s: 0.3}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_0.8s_turn:
+    route: '04'
+    faults: [{kind: dropout, box: route04_turn, duration_s: 0.8}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_1.5s_turn:
+    route: '04'
+    faults: [{kind: dropout, box: route04_turn, duration_s: 1.5}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_3s_turn:
+    route: '04'
+    faults: [{kind: dropout, box: route04_turn, duration_s: 3.0}]
+    target: {stop: true, max_error_m: 0.50}
+  dropout_10s_turn:
+    route: '04'
+    faults: [{kind: dropout, box: route04_turn, duration_s: 10.0}]
+    target: {stop: true, max_error_m: 0.50}
+  dropout_front_1.5s_straight:
+    route: '01'
+    faults: [{kind: dropout, antenna: front, at_m: 40, duration_s: 1.5}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_rear_1.5s_straight:
+    route: '01'
+    faults: [{kind: dropout, antenna: rear, at_m: 40, duration_s: 1.5}]
+    target: {stop: false, max_error_m: 0.10}
+  dropout_rear_1.5s_turn:
+    route: '04'
+    faults: [{kind: dropout, antenna: rear, box: route04_turn, duration_s: 1.5}]
+    target: {stop: false, max_error_m: 0.10}
+  outage_30s_straight:             # the network gone (a Wi-Fi dead spot): LOST -> controlled stop
+    route: '01'
+    faults: [{kind: dropout, at_m: 40, duration_s: 30.0}]
+    target: {stop: true, max_error_m: 0.50}
+  # --- bad positions ----------------------------------------------------------------------------------------------
+  jump_front_0.3m_straight:        # one epoch, sideways
+    route: '01'
+    faults: [{kind: jump, antenna: front, at_m: 40, east_m: 0.3}]
+    target: {stop: false, max_error_m: 0.10}
+  jump_front_1m_straight:
+    route: '01'
+    faults: [{kind: jump, antenna: front, at_m: 40, east_m: 1.0}]
+    target: {stop: false, max_error_m: 0.10}
+  jump_both_5m_straight:
+    route: '01'
+    faults: [{kind: jump, antenna: both, at_m: 40, east_m: 5.0}]
+    target: {stop: false, max_error_m: 0.10}
+  step_both_1m_5s_straight:        # a 1 m offset held for 5 s (e.g. a wrong correction)
+    route: '01'
+    faults: [{kind: jump, antenna: both, at_m: 40, duration_s: 5.0, east_m: 1.0}]
+    target: {stop: false, max_error_m: 0.30}
+  float_0.3m_10s_straight:         # RTK float: 0.3 m scatter per antenna
+    route: '01'
+    faults: [{kind: noise, at_m: 40, duration_s: 10.0, sigma_m: 0.3}]
+    target: {stop: false, max_error_m: 0.30}
+  float_0.3m_10s_turn:
+    route: '04'
+    faults: [{kind: noise, box: route04_turn, duration_s: 10.0, sigma_m: 0.3}]
+    target: {stop: false, max_error_m: 0.30}
+  # --- feed that looks alive but is not -----------------------------------------------------------------------------
+  stuck_1s_straight:               # same position, fresh stamps
+    route: '01'
+    faults: [{kind: stuck, at_m: 40, duration_s: 1.0}]
+    target: {stop: false, max_error_m: 0.10}
+  stuck_5s_straight:
+    route: '01'
+    faults: [{kind: stuck, at_m: 40, duration_s: 5.0}]
+    target: {stop: true, max_error_m: 0.50}
+  stuck_2s_turn:                   # fresh stamps keep the watchdog quiet while the pose is frozen in a turn
+    route: '04'
+    faults: [{kind: stuck, box: route04_turn, duration_s: 2.0}]
+    target: {stop: false, max_error_m: 0.10}
+  # --- heading faults ----------------------------------------------------------------------------------------------
+  swap_3s_straight:                # front / rear swapped: heading off by 180 deg
+    route: '01'
+    faults: [{kind: swap, at_m: 40, duration_s: 3.0}]
+    target: {stop: false, max_error_m: 0.10, max_heading_error_deg: 2.0}
+  swap_3s_turn:
+    route: '04'
+    faults: [{kind: swap, box: route04_turn, duration_s: 3.0}]
+    target: {stop: false, max_error_m: 0.10, max_heading_error_deg: 2.0}
+  freeze_rear_3s_turn:             # rear antenna stuck while turning: heading drifts
+    route: '04'
+    faults: [{kind: freeze, antenna: rear, box: route04_turn, duration_s: 3.0}]
+    target: {stop: false, max_error_m: 0.10, max_heading_error_deg: 2.0}
+  # --- timing -------------------------------------------------------------------------------------------------------
+  delay_0.3s_20s_straight:         # positions suddenly 0.3 s older
+    route: '01'
+    faults: [{kind: delay, at_m: 40, duration_s: 20.0, delay_s: 0.3}]
+    target: {stop: false, max_error_m: 0.15}
+  delay_0.3s_turn:
+    route: '04'
+    faults: [{kind: delay, box: route04_turn, duration_s: 10.0, delay_s: 0.3}]
+    target: {stop: false, max_error_m: 0.15}
+  burst_1s_straight:               # 1 s held back, then delivered at once
+    route: '01'
+    faults: [{kind: burst, at_m: 40, duration_s: 1.0}]
+    target: {stop: false, max_error_m: 0.10}
+  clock_+0.5s_20s_straight:        # stamps 0.5 s ahead
+    route: '01'
+    faults: [{kind: clock, at_m: 40, duration_s: 20.0, offset_s: 0.5}]
+    target: {stop: false, max_error_m: 0.10}
+  # --- lever arm: the antennas are not where the stack thinks (it assumes vehicle.yaml gnss_front_x, 1.041 m) -----
+  # antenna_offset_x is absolute: gnss_front_x +- 0.4 (update both if gnss_front_x changes)
+  lever_arm_+0.4m:
+    route: '04'
+    faults: []
+    backend_params: {antenna_offset_x: 1.441}
+    target: {stop: false, max_cte_m: 0.50}
+  lever_arm_-0.4m:
+    route: '04'
+    faults: []
+    backend_params: {antenna_offset_x: 0.641}
+    target: {stop: false, max_cte_m: 0.50}

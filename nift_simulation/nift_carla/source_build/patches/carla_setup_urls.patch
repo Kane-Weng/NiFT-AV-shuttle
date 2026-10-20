@@ -1,0 +1,20 @@
+--- Util/BuildTools/Setup.sh.bak	2026-10-12 23:22:58.696406313 -0400
++++ Util/BuildTools/Setup.sh	2026-10-13 09:03:08.271589446 -0400
+@@ -91,7 +91,7 @@
+     BOOST_PACKAGE_BASENAME=boost_${BOOST_VERSION//./_}
+ 
+     log "Retrieving boost."
+-    wget "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_PACKAGE_BASENAME}.tar.gz" || true
++    wget "https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_PACKAGE_BASENAME}.tar.gz" || true
+     # try to use the backup boost we have in Jenkins
+     if [[ ! -f "${BOOST_PACKAGE_BASENAME}.tar.gz" ]] ; then
+       log "Using boost backup"
+@@ -339,7 +339,7 @@
+ # ==============================================================================
+ 
+ LIBPNG_VERSION=1.6.37
+-LIBPNG_REPO=https://sourceforge.net/projects/libpng/files/libpng16/${LIBPNG_VERSION}/libpng-${LIBPNG_VERSION}.tar.xz
++LIBPNG_REPO=https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz
+ LIBPNG_BASENAME=libpng-${LIBPNG_VERSION}
+ LIBPNG_INSTALL=${LIBPNG_BASENAME}-install
+ 

@@ -1,0 +1,69 @@
+# Test routes for sim_route_run (nift_carla/tools/route_run.py).
+#
+#   ros2 run nift_carla sim_route_run <id> [--time-factor 5] [--plot]       (sim_route_run --list: this table)
+#
+# Map frame of the generated map (lanelet2_odr2024.osm, origin 42.3005, -83.6987), metres; yaw
+# in rad. Routes 01-12 run on it; 13 and 14 use the north-east roundabout, which only the twin's 2025 map
+# has (the source-built CARLA server's world; that map isn't shipped).
+#   spawn      [x, y, yaw]: the launch's spawn_x / spawn_y / spawn_yaw (base_link)
+#   goal       [x, y, yaw]: published on /goal_pose. The planner only uses the position (the yaw is the
+#              lane direction at the goal, for RViz's goal arrow). Spawn and goal snap to the nearest
+#              lanelet, heading ignored: keep them on the lane centre.
+#   timeout_s  sim seconds after /start_navigation before the run counts as failed (about twice what the
+#              shipped controller needs)
+
+routes:
+  '01':
+    name: 01_long_straight
+    description: straight, south
+    spawn: [101.52, 166.85, -1.6123]
+    goal: [91.98, -62.95, -1.612]
+    timeout_s: 240
+  '02':
+    name: 02_straight_north
+    description: straight, north (opposite carriageway)
+    spawn: [99.11, -52.39, 1.5297]
+    goal: [107.70, 147.40, 1.529]
+    timeout_s: 220
+  '03':
+    name: 03_left_turn
+    description: lane blend into a turn pocket, left turn; the goal sits 0.56 m beside the lane
+    spawn: [1.53, 30.11, -1.6049]
+    goal: [47.38, -16.92, -0.0452]
+    timeout_s: 120
+  '04':
+    name: 04_right_turn
+    description: right turn
+    spawn: [-12.81, 44.70, -0.0169]
+    goal: [60.00, 12.00, -1.606]
+    timeout_s: 120
+  '05':
+    name: 05_block_loop
+    description: three right turns round a block, ends through a turn pocket
+    spawn: [-12.81, 44.70, -0.0169]
+    goal: [5.41, 28.23, 1.5385]
+    timeout_s: 240
+  '11':
+    name: 11_se_loop_entry
+    description: entry to the south-east loop, a 1.9 m corner (stalls with the shipped controller)
+    spawn: [93.02, -29.97, -1.6119]
+    goal: [58.35, -70.04, -3.032]
+    timeout_s: 120
+  '12':
+    name: 12_west_blocks
+    description: west blocks, a 1.1 m corner
+    spawn: [-36.16, 20.29, -1.7528]
+    goal: [-46.29, -118.13, 1.6943]
+    timeout_s: 240
+  '13':
+    name: 13_ne_roundabout_from_straight
+    description: straight (northbound, left lane) into the north-east roundabout, three quarters round to its north side (2025 map)
+    spawn: [105.6, 120.0, 1.530]
+    goal: [149.0, 214.4, 3.10]
+    timeout_s: 200
+  '14':
+    name: 14_ne_roundabout_from_east_road
+    description: east road into the north-east roundabout, three quarters round, out south onto the straight (2025 map)
+    spawn: [135.3, 116.5, 1.055]
+    goal: [98.8, 111.5, -1.612]
+    timeout_s: 240

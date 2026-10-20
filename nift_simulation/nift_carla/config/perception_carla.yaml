@@ -1,0 +1,30 @@
+# lidar_node parameters for the CARLA backend (digital twin of the test track).
+#
+# nift_sensor/config/perception.yaml was tuned on Gazebo's perfectly flat, empty plane.
+# On the twin's real road surface (crowned, with curbs and roadside objects) the single-plane
+# RANSAC leaves a few dozen stray points at 8-12 m, and with min_cluster_size: 3 those become a
+# permanent phantom obstacle 5-10 m ahead (measured 2026-09-07 with the ego parked, nothing
+# within 35 m: /obstacles never empty, nearest edge 4.9-9.6 m).  This file keeps the same
+# pipeline but demands more evidence before something counts as an obstacle.
+lidar_node:
+  ros__parameters:
+    voxel_size: 0.05
+    ransac_max_iterations: 200
+    ransac_distance_threshold: 0.25  # crowned road: allow more plane residual before a point is "not ground"
+    min_obstacle_height: 0.20        # the single RANSAC plane still leaves road surface 4-6 m ahead / 1-2 m
+                                     # right as "obstacles" on this route (87 of 420 frames at 0.40, runs A/B of
+                                     # step 2.8 stopped on it); points must also be 0.2 m above the ground under
+                                     # the vehicle: 0 phantom frames of 660 over 25 poses, pedestrian / bollard /
+                                     # parked car detection unchanged (2026-09-25, recorded scans replayed)
+    dbscan_eps: 0.6
+    dbscan_min_points: 6             # was 3 — a pedestrian at 10 m still yields ~8-12 points with 8 channels
+    min_cluster_size: 6              # was 3
+    max_cluster_size: 5000
+    min_hull_points: 3
+    roi:
+      min_x: 0.3
+      max_x: 12.0
+      min_y: -2.5                    # was +-4.0: lane is 3.5 m wide; excludes the curb / sidewalk edge
+      max_y: 2.5
+      min_z: -1.5
+      max_z: 2.0

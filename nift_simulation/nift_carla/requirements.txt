@@ -1,0 +1,9 @@
+# Python packages without a usable rosdep key, installed by bootstrap.sh on every machine:
+#   python3 -m pip install --user -r nift_simulation/nift_carla/requirements.txt
+# Everything else (pyproj, numpy, PIL, ...) comes from package.xml through rosdep, and
+# python-socketio from nift_sensor/requirements.txt. The CARLA client is separate: requirements-carla.txt.
+
+# octane_emulator (socket.io server). >= 3.9 because it passes shutdown_timeout to web.AppRunner: on Ubuntu
+# 22.04's apt aiohttp 3.8.1 every connection is reset. Also needed off-CARLA: nift_bringup's preflight tests
+# use the emulator as a fake Octane server.
+aiohttp>=3.9

@@ -1,0 +1,6 @@
+# The CARLA Python client, only for machines that run the simulation (bootstrap.sh does not install it):
+#   python3 -m pip install --user -r nift_simulation/nift_carla/requirements-carla.txt
+#
+# It must match the CARLA server version (Mcity Digital Twin content is built for CARLA 0.9.15 / Unreal 4.26).
+# Wheels exist for Linux x86_64 up to Python 3.10 only (none for ARM, e.g. a Jetson).
+carla==0.9.15
