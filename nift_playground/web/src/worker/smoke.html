@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+  File: smoke.html
+
+  Description:
+    A bare page for the Pyodide worker, without the app around it. The Vite dev server serves it at
+    /src/worker/smoke.html. tests/pyodide/browser_smoke.mjs opens it in headless Chrome. Opened by
+    hand, it boots the worker, plans route 04 and drives it at max speed, and prints what it sees.
+    Not part of the production build.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Worker smoke test</title>
+    <style>
+      body { background: #111; color: #ddd; font: 13px/1.4 ui-monospace, monospace; margin: 16px; }
+    </style>
+  </head>
+  <body>
+    <pre id="out">starting</pre>
+    <script type="module">
+      const out = document.getElementById('out')
+      const lines = []
+      const show = (s) => { lines.push(s); out.textContent = lines.slice(-40).join('\n') }
+      const msgs = []
+      window.__smoke = { msgs, done: false, error: null, t0: performance.now() }
+      const worker = new Worker(new URL('./pyodide.worker.ts', import.meta.url), { type: 'module' })
+      const send = (m) => worker.postMessage(m)
+      const until = (pred, ms = 180000) => new Promise((resolve, reject) => {
+        const hit = msgs.find(pred)
+        if (hit) return resolve(hit)
+        const timer = setTimeout(() => reject(new Error('timeout')), ms)
+        const check = () => { const h = msgs.find(pred); if (h) { clearTimeout(timer); resolve(h) } else setTimeout(check, 50) }
+        check()
+      })
+      worker.onmessage = (ev) => {
+        const m = ev.data
+        m._wall = performance.now()
+        msgs.push(m)
+        if (m.type === 'progress') show(`progress ${m.stage} ${m.pct}`)
+        if (m.type === 'ready') show(`ready pyodide ${m.pyodide} python ${m.python} ${JSON.stringify(m.bootMs)}`)
+        if (m.type === 'event') show(`event ${m.kind} t=${m.t}`)
+        if (m.type === 'goal_ack') show(`goal_ack ok=${m.ok} ${m.reason ?? ''}`)
+        if (m.type === 'error') { show(`ERROR ${m.message}\n${m.traceback}`); window.__smoke.error = m.message }
+      }
+      worker.onerror = (e) => { show(`worker error ${e.message}`); window.__smoke.error = e.message }
+      const base = new URL('../../', location.href).href
+      send({ type: 'pause' })
+      send({ type: 'init', baseUrl: base, mapUrl: base + 'maps/lanelet2_odr2024.osm', launch: { spawn: '04' } })
+      try {
+        const r = await until((m) => m.type === 'ready' || (m.type === 'error' && m.fatal))
+        if (r.type === 'error') throw new Error(r.message)
+        window.__smoke.readyAt = performance.now()
+        send({ type: 'step', n: 20 })
+        send({ type: 'goal', x: 60, y: 12, yaw: -1.606, id: 'g' })
+        send({ type: 'step', n: 20 })
+        send({ type: 'cmd', name: 'start', id: 's' })
+        send({ type: 'speed', factor: 'max' })
+        send({ type: 'resume_sim' })
+        await until((m) => m.type === 'event' && m.kind === 'arrived')
+        send({ type: 'pause' })
+        await new Promise((r) => setTimeout(r, 200))
+        const states = msgs.filter((m) => m.type === 'state')
+        const last = states.at(-1)
+        show(`arrived: t=${last.t} pose=${JSON.stringify(last.pose)} status=${last.status} rtf=${last.rtf}`)
+        if (performance.memory) window.__smoke.jsHeapMb = performance.memory.usedJSHeapSize / 1e6
+      } catch (e) {
+        window.__smoke.error = String(e)
+        show(`FAILED ${e}`)
+      }
+      window.__smoke.done = true
+    </script>
+  </body>
+</html>

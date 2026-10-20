@@ -1,0 +1,27 @@
+{
+  "route": "03",
+  "name": "03_left_turn",
+  "description": "lane blend into a turn pocket, left turn; the goal sits 0.56 m beside the lane",
+  "spawn": [
+    1.53,
+    30.11,
+    -1.6049
+  ],
+  "goal": [
+    47.38,
+    -16.92
+  ],
+  "backend": "kinematic",
+  "attach": false,
+  "time_factor": 5.0,
+  "map_file": null,
+  "timeout_s": 120.0,
+  "stall_s": 10.0,
+  "started": "2026-10-20T06:48:22",
+  "ros_domain_id": "",
+  "git": {},
+  "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=1.53 spawn_y:=30.11 spawn_yaw:=-1.6049 time_factor:=5 localization:=ekf",
+  "outcome": "arrived",
+  "detail": "NAVIGATING -> IDLE after 48.1 s (sim), at rest",
+  "wall_s": 19.2
+}

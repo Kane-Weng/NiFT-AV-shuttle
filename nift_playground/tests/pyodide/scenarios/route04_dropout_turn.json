@@ -1,0 +1,10 @@
+{
+ "v": 1,
+ "note": "Route 04 with gnss_faults:=dropout_3s_turn (a scheduled sim fault, triggered in the turn's box), shadow localization: the stack should stop.",
+ "launch": {"spawn": "04", "localization": "shadow", "gnss_faults": "dropout_3s_turn"},
+ "events": [
+  {"tick": 20, "msg": {"type": "goal", "x": 60.0, "y": 12.0, "yaw": -1.606}},
+  {"tick": 40, "msg": {"type": "cmd", "name": "start"}}
+ ],
+ "ticks": 900
+}

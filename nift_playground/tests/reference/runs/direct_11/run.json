@@ -1,0 +1,27 @@
+{
+  "route": "11",
+  "name": "11_se_loop_entry",
+  "description": "entry to the south-east loop, a 1.9 m corner (stalls with the shipped controller)",
+  "spawn": [
+    93.02,
+    -29.97,
+    -1.6119
+  ],
+  "goal": [
+    58.35,
+    -70.04
+  ],
+  "backend": "kinematic",
+  "attach": false,
+  "time_factor": 5.0,
+  "map_file": null,
+  "timeout_s": 120.0,
+  "stall_s": 10.0,
+  "started": "2026-10-20T06:46:36",
+  "ros_domain_id": "",
+  "git": {},
+  "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=93.02 spawn_y:=-29.97 spawn_yaw:=-1.6119 time_factor:=5",
+  "outcome": "stalled",
+  "detail": "still for 10.0 s (sim) in NAVIGATING, 44.5 s after the start",
+  "wall_s": 21.0
+}

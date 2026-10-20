@@ -1,0 +1,84 @@
+{
+  "route": "01",
+  "name": "01_long_straight",
+  "description": "straight, south",
+  "spawn": [
+    101.52,
+    166.85,
+    -1.6123
+  ],
+  "goal": [
+    91.98,
+    -62.95
+  ],
+  "run_outcome": "safe_stop",
+  "run_detail": "SAFE_STOP after 24.6 s (sim)",
+  "time_factor": 1.0,
+  "launch_command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=101.52 spawn_y:=166.85 spawn_yaw:=-1.6123 time_factor:=1 gnss_faults:=outage_30s_straight",
+  "wall_s": 41.9,
+  "t_rel_zero": 5.7,
+  "nav_start_t": 5.702069333384134,
+  "nav_end_t": 30.251328840496367,
+  "status_after_nav": "SAFE_STOP",
+  "nav_duration_s": 24.549259507112232,
+  "final_pose": {
+    "x": 99.2184852928132,
+    "y": 120.68174103804758,
+    "yaw": -1.6119442359678646
+  },
+  "final_dist_to_goal": 183.77435072936277,
+  "samples": {
+    "odom": 646,
+    "cmd": 616,
+    "telemetry": 309
+  },
+  "metrics": {
+    "route": "01",
+    "name": "01_long_straight",
+    "outcome": "safe_stop",
+    "completed": false,
+    "status_sequence": [
+      "NAVIGATING",
+      "SAFE_STOP"
+    ],
+    "path_length": 228.96152152821932,
+    "path_points": 186,
+    "paths_in_bag": 1,
+    "goal": [
+      91.98,
+      -62.95
+    ],
+    "nav_duration_s": 24.549259507112232,
+    "driven": 46.232105489926234,
+    "cte_rms": 0.024536425983609975,
+    "cte_max": 0.11789510976008721,
+    "cte_mean": 0.0026083028993170794,
+    "heading_err_rms_deg": 0.6542553443420612,
+    "heading_err_max_deg": 2.329405677035652,
+    "steer_rate_max_deg_s": 4.999999999999929,
+    "steer_rate_over_chatter": 0,
+    "last_steer_deg": 0.0,
+    "cruise_speed": 1.9649999985914943,
+    "peak_speed": 1.9649999999999985,
+    "arrival_speed": null,
+    "arrival_vs_end": null,
+    "rest_vs_end": -183.77410022185475,
+    "rest_drift": 0.0,
+    "rest_xy": [
+      99.2184852928132,
+      120.68174103804758
+    ],
+    "still_at_end_s": 2.1999999999999957,
+    "stop_s": 45.187421305139715,
+    "stop_xy": [
+      99.2184852928132,
+      120.68174103804758
+    ],
+    "stop_cte": 0.00044541027621801724,
+    "path_r_min": 157133.80625125507,
+    "path_r_min_s": 175.0,
+    "path_r_entry": 191.93399952534443,
+    "path_r_exit": 111980.0802431628,
+    "turns": []
+  }
+}

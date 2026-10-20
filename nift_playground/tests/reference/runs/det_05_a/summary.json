@@ -1,0 +1,140 @@
+{
+  "route": "05",
+  "name": "05_block_loop",
+  "description": "three right turns round a block, ends through a turn pocket",
+  "spawn": [
+    -12.81,
+    44.7,
+    -0.0169
+  ],
+  "goal": [
+    5.41,
+    28.23
+  ],
+  "run_outcome": "arrived",
+  "run_detail": "NAVIGATING -> IDLE after 114.4 s (sim), at rest",
+  "time_factor": 5.0,
+  "launch_command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=-12.81 spawn_y:=44.7 spawn_yaw:=-0.0169 time_factor:=5",
+  "wall_s": 32.8,
+  "t_rel_zero": 16.1,
+  "nav_start_t": 16.139875685293834,
+  "nav_end_t": 130.5129348439263,
+  "status_after_nav": "IDLE",
+  "nav_duration_s": 114.37305915863247,
+  "final_pose": {
+    "x": 4.57735095348216,
+    "y": 29.733106698687585,
+    "yaw": 1.782432831087213
+  },
+  "final_dist_to_goal": 1.7183230727388137,
+  "samples": {
+    "odom": 2522,
+    "cmd": 2390,
+    "telemetry": 1145
+  },
+  "metrics": {
+    "route": "05",
+    "name": "05_block_loop",
+    "outcome": "completed",
+    "completed": true,
+    "status_sequence": [
+      "NAVIGATING",
+      "IDLE"
+    ],
+    "path_length": 204.43973351735818,
+    "path_points": 174,
+    "paths_in_bag": 1,
+    "goal": [
+      5.41,
+      28.23
+    ],
+    "nav_duration_s": 114.37305915863247,
+    "driven": 206.26699194653196,
+    "cte_rms": 0.15009841180487404,
+    "cte_max": 0.38703056350721193,
+    "cte_mean": 0.0005740474132260891,
+    "heading_err_rms_deg": 4.23167846827374,
+    "heading_err_max_deg": 13.9868877618525,
+    "steer_rate_max_deg_s": 9.400000000000547,
+    "steer_rate_over_chatter": 0,
+    "last_steer_deg": -1.62,
+    "cruise_speed": 1.9649999919734333,
+    "peak_speed": 1.9649999999999985,
+    "arrival_speed": 1.473015392002603,
+    "arrival_vs_end": -0.6793138436863898,
+    "rest_vs_end": 1.5321267286565121,
+    "rest_drift": 0.0,
+    "rest_xy": [
+      4.57735095348216,
+      29.733106698687585
+    ],
+    "still_at_end_s": 2.4000000000000057,
+    "stop_s": 204.43973351735818,
+    "stop_xy": [
+      4.57735095348216,
+      29.733106698687585
+    ],
+    "stop_cte": 1.5391261788458674,
+    "path_r_min": 7.269918039630701,
+    "path_r_min_s": 65.75,
+    "path_r_entry": 294.22418699592345,
+    "path_r_exit": 7.606213619740991,
+    "turns": [
+      {
+        "s0": 52.25,
+        "s1": 91.0,
+        "heading_change_deg": -90.63703146005953,
+        "cte_rms": 0.15486370333045837,
+        "cte_max": 0.31592656844645023,
+        "heading_err_max_deg": 11.548965237094365,
+        "steer_rate_max_deg_s": 6.600000000000376,
+        "v_min": 1.4476994942808727,
+        "path_r_min": 7.269918039630701
+      },
+      {
+        "s0": 102.5,
+        "s1": 136.5,
+        "heading_change_deg": -89.7450103467017,
+        "cte_rms": 0.18579170804499562,
+        "cte_max": 0.32175673785753794,
+        "heading_err_max_deg": 10.557089622587455,
+        "steer_rate_max_deg_s": 9.400000000000547,
+        "v_min": 1.3323300296728189,
+        "path_r_min": 9.013219773197836
+      },
+      {
+        "s0": 149.75,
+        "s1": 182.75,
+        "heading_change_deg": -89.52933989524817,
+        "cte_rms": 0.20205245107137357,
+        "cte_max": 0.3404907282293757,
+        "heading_err_max_deg": 13.9868877618525,
+        "steer_rate_max_deg_s": 6.8000000000003835,
+        "v_min": 1.3153012764174277,
+        "path_r_min": 7.827206289379756
+      },
+      {
+        "s0": 181.75,
+        "s1": 203.75,
+        "heading_change_deg": 23.834625528117606,
+        "cte_rms": 0.19682540733287673,
+        "cte_max": 0.38703056350721193,
+        "heading_err_max_deg": 8.930096960570381,
+        "steer_rate_max_deg_s": 8.999999999997954,
+        "v_min": 1.7738428985459955,
+        "path_r_min": 7.301534601170506
+      },
+      {
+        "s0": 191.0,
+        "s1": 204.5,
+        "heading_change_deg": -23.723548062065326,
+        "cte_rms": 0.23574582540138767,
+        "cte_max": 0.38703056350721193,
+        "heading_err_max_deg": 8.930096960570381,
+        "steer_rate_max_deg_s": 8.999999999997954,
+        "v_min": 1.7738428985459955,
+        "path_r_min": 7.301534601170506
+      }
+    ]
+  }
+}

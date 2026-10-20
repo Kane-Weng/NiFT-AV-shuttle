@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Python bundle, written by tools/build_bundle.py (npm run bundle)
+public/py/

@@ -1,0 +1,11 @@
+{
+ "v": 1,
+ "note": "Route 04, a 3 s live Octane outage at 20 s: the GNSS watchdogs end the drive in SAFE_STOP.",
+ "launch": {"spawn": "04"},
+ "events": [
+  {"tick": 20, "msg": {"type": "goal", "x": 60.0, "y": 12.0, "yaw": -1.606}},
+  {"tick": 40, "msg": {"type": "cmd", "name": "start"}},
+  {"tick": 400, "msg": {"type": "gnss_fault", "preset": "outage", "params": {"duration_s": 3.0}}}
+ ],
+ "ticks": 560
+}

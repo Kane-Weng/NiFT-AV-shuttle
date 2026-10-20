@@ -1,0 +1,639 @@
+/*
+ * File: MapScene.ts
+ *
+ * Description:
+ *   The three.js view of the playground, drawn to look like our RViz: dark background, grid,
+ *   lanelet borders, the planned path, a goal marker, obstacles and the box shuttle with its
+ *   TF axes. Everything is in the map frame (x east, y north, z up, metres).
+ *
+ *   Camera: top-down orthographic by default (left drag pans, right drag rotates, wheel zooms),
+ *   or perspective (right drag also tilts). A click without a drag reports the map point, which
+ *   the page uses for the goal. A tool can take a left-button gesture (onDragStart returns true):
+ *   the camera then stays still and the tool gets the drag (2D Goal and 2D Pose Estimate with
+ *   their heading, moving an obstacle).
+ *
+ *   The scene has no React in it. The page creates one MapScene per canvas and feeds it data.
+ */
+
+import * as THREE from 'three'
+import { MapControls } from 'three/examples/jsm/controls/MapControls.js'
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
+import { Line2 } from 'three/examples/jsm/lines/Line2.js'
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js'
+import type { LaneletMap, XY, BorderKind } from '../map/lanelets'
+import type { Pose2D } from '../protocol'
+import { VEHICLE } from '../geo/site'
+import { THEMES, type SceneTheme, type ThemeName } from './theme'
+
+export type CameraMode = 'ortho' | 'persp'
+
+export interface MapSceneEvents {
+  onClick?: (x: number, y: number) => void
+  onHover?: (x: number, y: number) => void
+  /** Left button down on the map. Return true to take the gesture from the camera. */
+  onDragStart?: (x: number, y: number) => boolean
+  onDrag?: (x: number, y: number) => void
+  onDragEnd?: (x: number, y: number) => void
+}
+
+export interface ArrowSpec {
+  x: number
+  y: number
+  yaw: number
+  kind: 'goal' | 'pose'
+}
+
+// Draw order heights [m]: everything flat sits a little above the grid so nothing z-fights
+const Z_GRID = -0.02
+const Z_LANES = 0.0
+const Z_CENTER = 0.01
+const Z_OBST = 0.02
+const Z_TRAIL = 0.03
+const Z_PATH = 0.05
+const Z_GOAL = 0.06
+
+const TRAIL_MAX = 4000
+
+function segmentsOf(lines: XY[][], z: number): number[] {
+  const out: number[] = []
+  for (const p of lines) {
+    for (let i = 1; i < p.length; i++) out.push(p[i - 1][0], p[i - 1][1], z, p[i][0], p[i][1], z)
+  }
+  return out
+}
+
+function lineMat(color: number, width: number, dashed = false, dash = 3, gap = 3): LineMaterial {
+  const m = new LineMaterial({ color, linewidth: width, worldUnits: false, dashed, dashSize: dash, gapSize: gap })
+  m.depthWrite = false
+  return m
+}
+
+/** RViz-style TF axes: red x, green y, blue z. */
+function makeAxes(length: number, radius: number): THREE.Group {
+  const g = new THREE.Group()
+  const geo = new THREE.CylinderGeometry(radius, radius, length, 12)
+  geo.translate(0, length / 2, 0)
+  const make = (color: number, rot: (m: THREE.Mesh) => void) => {
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color }))
+    rot(m)
+    g.add(m)
+  }
+  make(0xff0000, (m) => m.rotateZ(-Math.PI / 2)) // +y -> +x
+  make(0x00ff00, () => {}) // +y
+  make(0x0000ff, (m) => m.rotateX(Math.PI / 2)) // +y -> +z
+  return g
+}
+
+export class MapScene {
+  readonly renderer: THREE.WebGLRenderer
+  readonly scene = new THREE.Scene()
+  private ortho: THREE.OrthographicCamera
+  private persp: THREE.PerspectiveCamera
+  private controls: MapControls
+  private mode: CameraMode = 'ortho'
+  private theme: SceneTheme = THEMES.dark
+  private themeName: ThemeName = 'dark'
+  private width = 1
+  private height = 1
+  private raf = 0
+  private resizeObs: ResizeObserver
+  private lineMats: { mat: LineMaterial; key: keyof SceneTheme }[] = []
+  private meshMats: { mat: { color: THREE.Color }; key: keyof SceneTheme }[] = []
+
+  private gridGroup = new THREE.Group()
+  private laneGroup = new THREE.Group()
+  private centerGroup = new THREE.Group()
+  private obstacleGroup = new THREE.Group()
+  private pathLine: Line2
+  private pathGeo = new LineGeometry()
+  private trailLine: THREE.Line
+  private trailPos = new Float32Array(TRAIL_MAX * 3)
+  private trailCount = 0
+  private goalGroup = new THREE.Group()
+  private shuttle = new THREE.Group()
+  private mapAxes: THREE.Group
+  private bounds = { minX: -50, minY: -50, maxX: 50, maxY: 50 }
+  private follow = false
+  private lastPose: Pose2D | null = null
+  private down: { x: number; y: number; t: number } | null = null
+  private arrowKind: 'goal' | 'pose' = 'goal'
+  private dragging = false
+  private perceivedGroup = new THREE.Group()
+  private arrow = new THREE.Group()
+  private arrowMat: THREE.MeshBasicMaterial
+  private poseEst: THREE.LineLoop
+  private obstacleMats: THREE.Material[] = []
+  private perceivedMat: LineMaterial | null = null
+
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private events: MapSceneEvents = {},
+  ) {
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+
+    this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 5000)
+    this.ortho.up.set(0, 0, 1)
+    this.ortho.position.set(0, 0, 500)
+    this.persp = new THREE.PerspectiveCamera(50, 1, 0.1, 10000)
+    this.persp.up.set(0, 0, 1)
+
+    this.controls = new MapControls(this.ortho, canvas)
+    this.controls.enableDamping = true
+    this.controls.dampingFactor = 0.15
+    this.controls.zoomToCursor = true
+    this.configureControls()
+
+    this.scene.add(this.gridGroup, this.laneGroup, this.centerGroup, this.obstacleGroup, this.perceivedGroup, this.goalGroup)
+
+    // RViz's pose arrows: a flat arrow, 3 m long, for the goal or pose being dragged
+    this.arrowMat = new THREE.MeshBasicMaterial({ color: this.theme.goal, side: THREE.DoubleSide, depthWrite: false })
+    const shape = new THREE.Shape()
+    shape.moveTo(0, -0.18)
+    shape.lineTo(2.1, -0.18)
+    shape.lineTo(2.1, -0.55)
+    shape.lineTo(3.0, 0)
+    shape.lineTo(2.1, 0.55)
+    shape.lineTo(2.1, 0.18)
+    shape.lineTo(0, 0.18)
+    shape.closePath()
+    const arrowMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), this.arrowMat)
+    arrowMesh.renderOrder = 7
+    this.arrow.add(arrowMesh)
+    this.arrow.visible = false
+    this.scene.add(this.arrow)
+
+    // The stack's pose (TF map -> base_link) as an outline of the footprint, beside the true box
+    const front = VEHICLE.wheelBase / 2 + VEHICLE.frontOverhang
+    const rear = VEHICLE.wheelBase / 2 + VEHICLE.rearOverhang
+    const w = VEHICLE.width / 2
+    const estMat = new THREE.LineBasicMaterial({ color: this.theme.poseEst })
+    this.meshMats.push({ mat: estMat, key: 'poseEst' })
+    this.poseEst = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(front, w, 0.08),
+        new THREE.Vector3(-rear, w, 0.08),
+        new THREE.Vector3(-rear, -w, 0.08),
+        new THREE.Vector3(front, -w, 0.08),
+        new THREE.Vector3(front + 0.8, 0, 0.08),
+      ]),
+      estMat,
+    )
+    this.poseEst.visible = false
+    this.scene.add(this.poseEst)
+
+    // Path (nav_msgs/Path in RViz: a green line)
+    const pathMat = this.track(lineMat(this.theme.path, 4), 'path')
+    this.pathLine = new Line2(this.pathGeo, pathMat)
+    this.pathLine.visible = false
+    this.pathLine.renderOrder = 5
+    this.scene.add(this.pathLine)
+
+    // Trail of driven poses (like an Odometry display with a long history)
+    const trailGeo = new THREE.BufferGeometry()
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(this.trailPos, 3))
+    trailGeo.setDrawRange(0, 0)
+    const trailMat = new THREE.LineBasicMaterial({ color: this.theme.trail, transparent: true, opacity: 0.6 })
+    this.meshMats.push({ mat: trailMat, key: 'trail' })
+    this.trailLine = new THREE.Line(trailGeo, trailMat)
+    this.trailLine.frustumCulled = false
+    this.scene.add(this.trailLine)
+
+    this.buildGoal()
+    this.buildShuttle()
+    this.mapAxes = makeAxes(4, 0.12)
+    this.scene.add(this.mapAxes)
+    this.buildGrid()
+
+    // Capture phase on the parent: a tool sees the press before MapControls starts a pan
+    canvas.parentElement?.addEventListener('pointerdown', this.onToolDown, true)
+    canvas.addEventListener('pointerdown', this.onPointerDown)
+    canvas.addEventListener('pointerup', this.onPointerUp)
+    canvas.addEventListener('pointermove', this.onPointerMove)
+    this.resizeObs = new ResizeObserver(() => this.resize())
+    this.resizeObs.observe(canvas.parentElement ?? canvas)
+    this.resize()
+    this.setTheme('dark')
+    this.loop()
+  }
+
+  // ------------------------------------------------------------ public API
+
+  setTheme(name: ThemeName) {
+    this.themeName = name
+    this.theme = THEMES[name]
+    this.scene.background = new THREE.Color(this.theme.background)
+    for (const { mat, key } of this.lineMats) mat.color.setHex(this.theme[key])
+    for (const { mat, key } of this.meshMats) mat.color.setHex(this.theme[key])
+    this.arrowMat.color.setHex(this.theme[this.arrowKind])
+  }
+
+  getTheme(): ThemeName {
+    return this.themeName
+  }
+
+  /** Draws the lanelet map and fits the view to it. */
+  setMap(map: LaneletMap) {
+    this.laneGroup.clear()
+    this.centerGroup.clear()
+    const byKind = new Map<string, XY[][]>()
+    for (const b of map.borders) {
+      const k = `${b.kind}:${b.dashed ? 'd' : 's'}`
+      const list = byKind.get(k) ?? []
+      list.push(b.points)
+      byKind.set(k, list)
+    }
+    const widths: Record<BorderKind, number> = { edge: 1.6, divider: 1.3, center: 1.6, virtual: 1, stop_line: 2.5 }
+    for (const [k, lines] of byKind) {
+      const [kind, style] = k.split(':') as [BorderKind, string]
+      const key: keyof SceneTheme = kind === 'stop_line' ? 'edge' : kind
+      const geo = new LineSegmentsGeometry().setPositions(segmentsOf(lines, Z_LANES))
+      const mat = this.track(lineMat(this.theme[key], widths[kind], style === 'd', 3, 3), key)
+      const obj = new LineSegments2(geo, mat)
+      if (style === 'd') obj.computeLineDistances()
+      this.laneGroup.add(obj)
+    }
+    const cgeo = new LineSegmentsGeometry().setPositions(segmentsOf(map.lanelets.map((l) => l.centerline), Z_CENTER))
+    const cl = new LineSegments2(cgeo, this.track(lineMat(this.theme.centerline, 1, true, 1, 1.5), 'centerline'))
+    cl.computeLineDistances()
+    this.centerGroup.add(cl)
+    this.bounds = map.bounds
+    this.buildGrid()
+    this.fit()
+  }
+
+  setCenterlinesVisible(v: boolean) {
+    this.centerGroup.visible = v
+  }
+
+  setPath(points: XY[]) {
+    if (points.length < 2) {
+      this.pathLine.visible = false
+      return
+    }
+    const pos: number[] = []
+    for (const p of points) pos.push(p[0], p[1], Z_PATH)
+    this.pathGeo.dispose()
+    this.pathGeo = new LineGeometry()
+    this.pathGeo.setPositions(pos)
+    this.pathLine.geometry = this.pathGeo
+    this.pathLine.computeLineDistances()
+    this.pathLine.visible = true
+  }
+
+  setGoal(goal: XY | null) {
+    this.goalGroup.visible = goal !== null
+    if (goal) this.goalGroup.position.set(goal[0], goal[1], Z_GOAL)
+  }
+
+  /** The world's obstacles; the one at `selected` gets a strong outline. */
+  setObstacles(polys: XY[][], selected = -1) {
+    for (const c of this.obstacleGroup.children) (c as THREE.Mesh).geometry.dispose()
+    for (const m of this.obstacleMats) m.dispose()
+    this.obstacleGroup.clear()
+    const fill = new THREE.MeshBasicMaterial({ color: this.theme.obstacle, transparent: true, opacity: 0.35, depthWrite: false })
+    const edge = new THREE.LineBasicMaterial({ color: this.theme.obstacle })
+    const sel = new THREE.LineBasicMaterial({ color: this.theme.selected })
+    this.obstacleMats = [fill, edge, sel]
+    this.meshMats = this.meshMats.filter((e) => e.key !== 'obstacle' && e.key !== 'selected')
+    this.meshMats.push({ mat: fill, key: 'obstacle' }, { mat: edge, key: 'obstacle' }, { mat: sel, key: 'selected' })
+    polys.forEach((poly, i) => {
+      if (poly.length < 3) return
+      const shape = new THREE.Shape(poly.map(([x, y]) => new THREE.Vector2(x, y)))
+      const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fill)
+      mesh.position.z = Z_OBST
+      this.obstacleGroup.add(mesh)
+      const pts = [...poly, poly[0]].map(([x, y]) => new THREE.Vector3(x, y, Z_OBST + 0.01))
+      this.obstacleGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), i === selected ? sel : edge))
+    })
+  }
+
+  /** What /obstacles held, in the map frame, dashed. null or [] hides them. */
+  setPerceived(polys: XY[][] | null) {
+    for (const c of this.perceivedGroup.children) (c as LineSegments2).geometry.dispose()
+    this.perceivedGroup.clear()
+    if (!polys || polys.length === 0) return
+    // One fat dashed material for every call (tracked once for the theme and the resolution)
+    this.perceivedMat ??= this.track(lineMat(this.theme.perceived, 2.5, true, 0.5, 0.35), 'perceived')
+    const closed = polys.filter((p) => p.length >= 2).map((p) => [...p, p[0]])
+    const geo = new LineSegmentsGeometry().setPositions(segmentsOf(closed, Z_OBST + 0.03))
+    const line = new LineSegments2(geo, this.perceivedMat)
+    line.computeLineDistances()
+    line.renderOrder = 6
+    this.perceivedGroup.add(line)
+  }
+
+  /** The arrow of a 2D Goal or 2D Pose Estimate being placed, or null to hide it. */
+  setArrow(a: ArrowSpec | null) {
+    this.arrow.visible = a !== null
+    if (!a) return
+    this.arrowKind = a.kind
+    this.arrowMat.color.setHex(this.theme[a.kind])
+    this.arrow.position.set(a.x, a.y, Z_GOAL + 0.02)
+    this.arrow.rotation.set(0, 0, a.yaw)
+    // 3 m long, or about 70 px when zoomed out, so it reads at any zoom
+    const k = Math.max(1, (70 * this.metresPerPixel()) / 3)
+    this.arrow.scale.set(k, k, 1)
+  }
+
+  /** The pose the stack believes, as an outline. null hides it. */
+  setPoseEst(p: Pose2D | null) {
+    this.poseEst.visible = p !== null
+    if (!p) return
+    this.poseEst.position.set(p.x, p.y, 0)
+    this.poseEst.rotation.set(0, 0, p.yaw)
+  }
+
+  /** Moves the shuttle (base_link) and extends the trail. */
+  setPose(p: Pose2D) {
+    this.shuttle.visible = true
+    this.shuttle.position.set(p.x, p.y, 0)
+    this.shuttle.rotation.set(0, 0, p.yaw)
+    const last = this.lastPose
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.25) {
+      if (last && Math.hypot(p.x - last.x, p.y - last.y) > 20) this.clearTrail()
+      if (this.trailCount < TRAIL_MAX) {
+        this.trailPos.set([p.x, p.y, Z_TRAIL], this.trailCount * 3)
+        this.trailCount++
+        const attr = this.trailLine.geometry.getAttribute('position') as THREE.BufferAttribute
+        attr.needsUpdate = true
+        this.trailLine.geometry.setDrawRange(0, this.trailCount)
+      }
+      this.lastPose = { ...p }
+    }
+    if (this.follow) {
+      const d = new THREE.Vector3(p.x, p.y, 0).sub(this.controls.target)
+      this.controls.target.add(d)
+      this.camera().position.add(d)
+    }
+  }
+
+  clearTrail() {
+    this.trailCount = 0
+    this.trailLine.geometry.setDrawRange(0, 0)
+  }
+
+  /** Follows the shuttle. From a view wider than 200 m it first zooms to 60 m around it. */
+  setFollow(v: boolean) {
+    this.follow = v
+    if (!v || !this.lastPose) return
+    if (this.metresPerPixel() * this.height > 200) this.focus(this.lastPose.x, this.lastPose.y, 60)
+    else this.setPose(this.lastPose)
+  }
+
+  /** Centres the view on a map point with about `span` metres visible vertically. */
+  focus(x: number, y: number, span: number) {
+    const d = new THREE.Vector3(x, y, 0).sub(this.controls.target)
+    this.controls.target.add(d)
+    if (this.mode === 'ortho') {
+      this.ortho.position.set(x, y, 500)
+      this.ortho.zoom = this.height / span
+      this.ortho.updateProjectionMatrix()
+    } else {
+      const offset = this.persp.position.clone().sub(this.controls.target.clone().sub(d)).normalize()
+      const dist = span / (2 * Math.tan((this.persp.fov * Math.PI) / 360))
+      this.persp.position.copy(this.controls.target).addScaledVector(offset, dist)
+    }
+    this.controls.update()
+  }
+
+  setCameraMode(mode: CameraMode) {
+    if (mode === this.mode) return
+    const target = this.controls.target.clone()
+    const metresPerPx = this.metresPerPixel()
+    this.mode = mode
+    if (mode === 'persp') {
+      // Same footprint as the ortho view, seen from the south and above
+      const span = metresPerPx * this.height
+      const dist = span / (2 * Math.tan((this.persp.fov * Math.PI) / 360))
+      this.persp.position.set(target.x, target.y - dist * 0.55, dist * 0.85)
+    } else {
+      this.ortho.position.set(target.x, target.y, 500)
+      this.ortho.zoom = this.ortho.zoom || 1
+    }
+    this.controls.object = this.camera()
+    this.configureControls()
+    this.controls.target.copy(target)
+    this.controls.update()
+  }
+
+  getCameraMode(): CameraMode {
+    return this.mode
+  }
+
+  /** Fits the camera to the map bounds, top-down. */
+  fit() {
+    const b = this.bounds
+    const cx = (b.minX + b.maxX) / 2
+    const cy = (b.minY + b.maxY) / 2
+    const w = (b.maxX - b.minX) * 1.08
+    const h = (b.maxY - b.minY) * 1.08
+    this.controls.target.set(cx, cy, 0)
+    if (this.mode === 'ortho') {
+      this.ortho.position.set(cx, cy, 500)
+      this.ortho.zoom = Math.min(this.width / w, this.height / h)
+      this.ortho.updateProjectionMatrix()
+    } else {
+      const span = Math.max(h, (w * this.height) / this.width)
+      const dist = span / (2 * Math.tan((this.persp.fov * Math.PI) / 360))
+      this.persp.position.set(cx, cy - dist * 0.55, dist * 0.85)
+    }
+    this.controls.update()
+  }
+
+  /** Map point under a canvas pixel, on the ground plane. */
+  pick(clientX: number, clientY: number): XY | null {
+    const r = this.canvas.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
+    const ray = new THREE.Raycaster()
+    ray.setFromCamera(ndc, this.camera())
+    const hit = new THREE.Vector3()
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) return null
+    return [hit.x, hit.y]
+  }
+
+  /** Canvas pixel of a map point (for tests and overlays). */
+  project(x: number, y: number): { x: number; y: number } {
+    const v = new THREE.Vector3(x, y, 0).project(this.camera())
+    const r = this.canvas.getBoundingClientRect()
+    return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height }
+  }
+
+  dispose() {
+    cancelAnimationFrame(this.raf)
+    this.resizeObs.disconnect()
+    this.controls.dispose()
+    this.canvas.parentElement?.removeEventListener('pointerdown', this.onToolDown, true)
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown)
+    this.canvas.removeEventListener('pointerup', this.onPointerUp)
+    this.canvas.removeEventListener('pointermove', this.onPointerMove)
+    this.renderer.dispose()
+  }
+
+  // ------------------------------------------------------------ internals
+
+  private camera(): THREE.Camera {
+    return this.mode === 'ortho' ? this.ortho : this.persp
+  }
+
+  private metresPerPixel(): number {
+    if (this.mode === 'ortho') return 1 / this.ortho.zoom
+    const dist = this.persp.position.distanceTo(this.controls.target)
+    return (2 * dist * Math.tan((this.persp.fov * Math.PI) / 360)) / this.height
+  }
+
+  private configureControls() {
+    const c = this.controls
+    if (this.mode === 'ortho') {
+      // Top-down: right drag only spins about z, like RViz's TopDownOrtho view
+      c.minPolarAngle = 0
+      c.maxPolarAngle = 0
+      c.minZoom = 0.2
+      c.maxZoom = 400
+    } else {
+      c.minPolarAngle = 0
+      c.maxPolarAngle = Math.PI * 0.47
+      c.minDistance = 3
+      c.maxDistance = 4000
+    }
+  }
+
+  private track<T extends LineMaterial>(m: T, key: keyof SceneTheme): T {
+    m.resolution.set(this.width, this.height)
+    this.lineMats.push({ mat: m, key })
+    return m
+  }
+
+  private buildGrid() {
+    this.gridGroup.clear()
+    this.meshMats = this.meshMats.filter((e) => e.key !== 'gridMinor' && e.key !== 'gridMajor')
+    const b = this.bounds
+    const minor = 5
+    const major = 50
+    const pad = 250
+    const x0 = Math.floor((b.minX - pad) / major) * major
+    const x1 = Math.ceil((b.maxX + pad) / major) * major
+    const y0 = Math.floor((b.minY - pad) / major) * major
+    const y1 = Math.ceil((b.maxY + pad) / major) * major
+    const minorPts: number[] = []
+    const majorPts: number[] = []
+    for (let x = x0; x <= x1; x += minor) (x % major === 0 ? majorPts : minorPts).push(x, y0, Z_GRID, x, y1, Z_GRID)
+    for (let y = y0; y <= y1; y += minor) (y % major === 0 ? majorPts : minorPts).push(x0, y, Z_GRID, x1, y, Z_GRID)
+    const mk = (pts: number[], key: 'gridMinor' | 'gridMajor') => {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3))
+      const mat = new THREE.LineBasicMaterial({ color: this.theme[key], depthWrite: false })
+      this.meshMats.push({ mat, key })
+      const l = new THREE.LineSegments(geo, mat)
+      l.renderOrder = -1
+      return l
+    }
+    this.gridGroup.add(mk(minorPts, 'gridMinor'), mk(majorPts, 'gridMajor'))
+  }
+
+  private buildGoal() {
+    const ringMat = new THREE.MeshBasicMaterial({ color: this.theme.goal, side: THREE.DoubleSide })
+    const discMat = new THREE.MeshBasicMaterial({ color: this.theme.goal, transparent: true, opacity: 0.25, depthWrite: false })
+    this.meshMats.push({ mat: ringMat, key: 'goal' }, { mat: discMat, key: 'goal' })
+    this.goalGroup.add(new THREE.Mesh(new THREE.RingGeometry(1.0, 1.35, 40), ringMat))
+    this.goalGroup.add(new THREE.Mesh(new THREE.CircleGeometry(1.0, 40), discMat))
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.5, 8), ringMat)
+    pole.rotateX(Math.PI / 2)
+    pole.position.z = 1.25
+    this.goalGroup.add(pole)
+    this.goalGroup.visible = false
+  }
+
+  /** The box shuttle: real length, width and height, base_link mid-wheelbase, an orange nose. */
+  private buildShuttle() {
+    const front = VEHICLE.wheelBase / 2 + VEHICLE.frontOverhang
+    const rear = VEHICLE.wheelBase / 2 + VEHICLE.rearOverhang
+    const nose = 0.35
+    const bodyLen = front + rear - nose
+    const bodyMat = new THREE.MeshLambertMaterial({ color: this.theme.body })
+    const frontMat = new THREE.MeshLambertMaterial({ color: this.theme.front })
+    this.meshMats.push({ mat: bodyMat, key: 'body' })
+    this.meshMats.push({ mat: frontMat, key: 'front' })
+    const body = new THREE.Mesh(new THREE.BoxGeometry(bodyLen, VEHICLE.width, VEHICLE.height), bodyMat)
+    body.position.set(-rear + bodyLen / 2, 0, VEHICLE.height / 2)
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(nose, VEHICLE.width, VEHICLE.height), frontMat)
+    cap.position.set(front - nose / 2, 0, VEHICLE.height / 2)
+    const outline = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(front + rear, VEHICLE.width, VEHICLE.height)),
+      new THREE.LineBasicMaterial({ color: this.theme.bodyEdge }),
+    )
+    this.meshMats.push({ mat: outline.material as THREE.LineBasicMaterial, key: 'bodyEdge' })
+    outline.position.set((front - rear) / 2, 0, VEHICLE.height / 2)
+    const axes = makeAxes(2.2, 0.07)
+    axes.position.z = VEHICLE.height + 0.05 // base_link axes, lifted so they show from above
+    this.shuttle.add(body, cap, outline, axes)
+    this.shuttle.visible = false
+    this.scene.add(this.shuttle)
+    this.scene.add(new THREE.AmbientLight(0xffffff, 1.6))
+    const sun = new THREE.DirectionalLight(0xffffff, 1.4)
+    sun.position.set(-30, -50, 100)
+    this.scene.add(sun)
+  }
+
+  private resize() {
+    const parent = this.canvas.parentElement
+    const w = Math.max(1, parent?.clientWidth ?? this.canvas.clientWidth)
+    const h = Math.max(1, parent?.clientHeight ?? this.canvas.clientHeight)
+    this.width = w
+    this.height = h
+    this.renderer.setSize(w, h, true)
+    this.ortho.left = -w / 2
+    this.ortho.right = w / 2
+    this.ortho.top = h / 2
+    this.ortho.bottom = -h / 2
+    this.ortho.updateProjectionMatrix()
+    this.persp.aspect = w / h
+    this.persp.updateProjectionMatrix()
+    for (const { mat } of this.lineMats) mat.resolution.set(w, h)
+  }
+
+  private loop = () => {
+    this.raf = requestAnimationFrame(this.loop)
+    this.controls.update()
+    this.renderer.render(this.scene, this.camera())
+  }
+
+  private onToolDown = (e: PointerEvent) => {
+    if (e.target !== this.canvas || e.button !== 0 || !this.events.onDragStart) return
+    const p = this.pick(e.clientX, e.clientY)
+    if (!p || !this.events.onDragStart(p[0], p[1])) return
+    // Disabled before MapControls sees this press, so it neither pans nor captures the pointer
+    this.controls.enabled = false
+    this.dragging = true
+    this.canvas.setPointerCapture?.(e.pointerId)
+  }
+
+  private onPointerDown = (e: PointerEvent) => {
+    this.down = this.dragging ? null : { x: e.clientX, y: e.clientY, t: performance.now() }
+  }
+
+  private onPointerUp = (e: PointerEvent) => {
+    if (this.dragging) {
+      this.dragging = false
+      this.controls.enabled = true
+      const p = this.pick(e.clientX, e.clientY)
+      if (p) this.events.onDragEnd?.(p[0], p[1])
+      return
+    }
+    const d = this.down
+    this.down = null
+    if (!d || e.button !== 0) return
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4 || performance.now() - d.t > 600) return
+    const p = this.pick(e.clientX, e.clientY)
+    if (p) this.events.onClick?.(p[0], p[1])
+  }
+
+  private onPointerMove = (e: PointerEvent) => {
+    const p = this.pick(e.clientX, e.clientY)
+    if (!p) return
+    this.events.onHover?.(p[0], p[1])
+    if (this.dragging) this.events.onDrag?.(p[0], p[1])
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "route": "05",
+  "name": "05_block_loop",
+  "description": "three right turns round a block, ends through a turn pocket",
+  "spawn": [
+    -12.81,
+    44.7,
+    -0.0169
+  ],
+  "goal": [
+    5.41,
+    28.23
+  ],
+  "backend": "kinematic",
+  "attach": false,
+  "time_factor": 5.0,
+  "map_file": null,
+  "timeout_s": 240.0,
+  "stall_s": 10.0,
+  "started": "2026-10-20T06:48:44",
+  "ros_domain_id": "",
+  "git": {},
+  "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=-12.81 spawn_y:=44.7 spawn_yaw:=-0.0169 time_factor:=5 localization:=ekf",
+  "outcome": "arrived",
+  "detail": "NAVIGATING -> IDLE after 114.4 s (sim), at rest",
+  "wall_s": 32.8
+}

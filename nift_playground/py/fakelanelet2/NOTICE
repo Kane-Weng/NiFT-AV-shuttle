@@ -1,0 +1,77 @@
+Lanelet2 stand-in for the NiFT web playground (nift_playground/py/fakelanelet2)
+
+This package is part of the NiFT AV shuttle repository, which is Apache-2.0 licensed (see LICENSE at the repository
+root). Several modules translate algorithms from third-party C++ libraries into Python. Those portions keep the
+licences of their sources. The full licence texts are in LICENSES/ next to this file, and every module names its
+sources in its docstring.
+
+This is an independent reimplementation. It is not made, reviewed or endorsed by FZI Forschungszentrum Informatik, by
+the Boost or GeographicLib authors, or by the owners of the Mcity Digital Twin. "Lanelet2" names the API this package
+imitates. It does not mean the package comes from the Lanelet2 project.
+
+Third-party portions, per file (paths relative to lanelet2/):
+
+  __init__.py         no third-party code (package docstring only)
+
+  core.py             Lanelet2 1.2.3: the Python API of lanelet2.core (class and method names, the semantics of
+                      inverted primitives, Attribute::asBool / asDouble).
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  _centerline.py      Lanelet2 1.2.3: calculateCenterline() and BoundChecker from lanelet2_core/src/Lanelet.cpp.
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  geometry.py         Lanelet2 1.2.3: lanelet2_core geometry (LineStringGeometry, LaneletGeometry, findNearest from
+                      LaneletMap.cpp, approximatedLength2d, toArcCoordinates, align / signedDistance).
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+                      Boost.Geometry 1.74: math::equals, compare::cartesian, side_by_triangle, the cartesian winding
+                      point-in-ring test, projected-point distance and point-to-ring distance (_beq, _bless_pt,
+                      _side_value, _side, _point_in_ring, _seg_cdist, _ring_distance).
+                      BSL-1.0, see LICENSES/BSL-1.0-Boost.txt for the copyright holders of each header.
+
+  _rtree.py           Boost.Geometry 1.74: the packing constructor of bgi::rtree with quadratic<16> and the
+                      incremental nearest query (index/rtree.hpp, index/parameters.hpp,
+                      index/detail/rtree/pack_create.hpp, index/detail/rtree/visitors/distance_query.hpp).
+                      BSL-1.0, see LICENSES/BSL-1.0-Boost.txt.
+
+  _utm.py             GeographicLib 1.52: TransverseMercator series and coefficient tables, Math helpers (sincosd,
+                      atan2d, AngDiff, taupf, tauf), UTMUPS zone rules.
+                      MIT, Copyright (c) 2008-2021, Charles Karney.
+                      LICENSES/MIT-GeographicLib.txt
+                      _hypot is Python's built-in math.hypot.
+
+  projection.py       Lanelet2 1.2.3: UtmProjector from lanelet2_projection/src/UTM.cpp.
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  io.py               Lanelet2 1.2.3: OsmFile.cpp and OsmHandlerLoad.cpp from lanelet2_io (load order, rules and
+                      error messages).
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  routing.py          Lanelet2 1.2.3: RoutingGraphBuilder.cpp, RoutingGraph.cpp and RoutingCost.h from
+                      lanelet2_routing.
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  traffic_rules.py    Lanelet2 1.2.3: GenericTrafficRules.cpp and GermanTrafficRules.cpp from lanelet2_traffic_rules.
+                      BSD-3-Clause, Copyright 2018 FZI Forschungszentrum Informatik.
+                      LICENSES/BSD-3-Clause-Lanelet2.txt
+
+  _nodecache.py       no third-party code.
+
+  node_cache/*.bin    Data, not code: map node coordinates computed by the real Lanelet2 from
+                      maps/lanelet2_odr2024.osm, which is derived from the Mcity Digital Twin.
+                      MIT, Copyright (c) 2024 Quantum Signal AI LLC, Copyright (c) 2024 The Regents of the University
+                      of Michigan.
+                      LICENSES/MIT-mcity-digital-twin.txt
+
+  _rtree.py (sort_by_first, _coarse0, _WalkRecord), geometry.py (fast paths)
+                      Our own code (Apache-2.0), added on top of the Boost-derived parts listed above.
+
+  _stdorder.py        Our own code (Apache-2.0), no third-party portions. It reproduces the iteration order of a C++
+                      hash map and the ordering of the C++ sort and select routines, written by an implementer who
+                      only saw a behavioural specification (CLEANROOM_SPEC.md) and test vectors, never the C++
+                      library sources.

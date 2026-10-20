@@ -1,0 +1,10 @@
+{
+ "v": 1,
+ "note": "Route 04 with localization ekf and the real GNSS feed model: the numpy EKF and the seeded noise in the loop.",
+ "launch": {"spawn": "04", "localization": "ekf", "gnss_feed": "real", "gnss_seed": 1},
+ "events": [
+  {"tick": 20, "msg": {"type": "goal", "x": 60.0, "y": 12.0, "yaw": -1.606}},
+  {"tick": 40, "msg": {"type": "cmd", "name": "start"}}
+ ],
+ "ticks": 1300
+}

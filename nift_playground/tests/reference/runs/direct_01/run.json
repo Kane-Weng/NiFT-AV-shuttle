@@ -1,0 +1,27 @@
+{
+  "route": "01",
+  "name": "01_long_straight",
+  "description": "straight, south",
+  "spawn": [
+    101.52,
+    166.85,
+    -1.6123
+  ],
+  "goal": [
+    91.98,
+    -62.95
+  ],
+  "backend": "kinematic",
+  "attach": false,
+  "time_factor": 5.0,
+  "map_file": null,
+  "timeout_s": 240.0,
+  "stall_s": 10.0,
+  "started": "2026-10-20T06:45:53",
+  "ros_domain_id": "",
+  "git": {},
+  "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=101.52 spawn_y:=166.85 spawn_yaw:=-1.6123 time_factor:=5",
+  "outcome": "arrived",
+  "detail": "NAVIGATING -> IDLE after 120.1 s (sim), at rest",
+  "wall_s": 37.6
+}

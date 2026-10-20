@@ -1,0 +1,46 @@
+// C++ ground truth for test_standin.py (fixtures/cxx_ground_truth.json.gz): libstdc++ std::unordered_map order,
+// std::sort and std::nth_element. Built and run with g++ 11.4 in nift_pub_deps:humble. um.cpp prints the
+// iteration order for ids read from a file; srt.cpp prints sort and nth_element permutations.
+// --- um.cpp
+#include <unordered_map>
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <map>
+int main(int argc, char** argv) {
+  // primes
+  std::__detail::_Prime_rehash_policy pol;
+  std::ofstream pf("/out/primes.txt");
+  for (std::size_t n = 0; n < 40; ++n) pf << "fast " << n << " " << pol._M_next_bkt(n) << "\n";
+  std::size_t p = 13;
+  while (p < 100000000ul) { p = pol._M_next_bkt(p + 1); pf << p << "\n"; }
+  // iteration order for ids from file (ascending insertion, via std::map like the loader)
+  std::ifstream in(argv[1]); std::vector<long long> ids; long long x;
+  while (in >> x) ids.push_back(x);
+  std::map<long long,int> sorted; for (auto i : ids) sorted[i] = 1;
+  std::unordered_map<long long,int> um;
+  for (auto& kv : sorted) um.emplace(kv.first, 1);
+  std::unordered_map<long long,int> cp(um);
+  std::ofstream of(argv[2]);
+  of << um.bucket_count() << "\n";
+  for (auto& kv : cp) of << kv.first << "\n";
+}
+// --- srt.cpp
+#include <algorithm>
+#include <vector>
+#include <fstream>
+#include <random>
+int main_srt() {
+  std::mt19937 rng(5); std::ofstream of("/out/srt.txt");
+  for (int t = 0; t < 400; ++t) {
+    int n = 1 + rng() % 600; int mod = 1 + rng() % 20;
+    std::vector<std::pair<int,int>> a; for (int i = 0; i < n; ++i) a.push_back({int(rng() % mod), i});
+    auto b = a; auto c = a;
+    std::sort(a.begin(), a.end(), [](auto& x, auto& y){ return x.first < y.first; });
+    int k = rng() % n;
+    std::nth_element(b.begin(), b.begin() + k, b.end(), [](auto& x, auto& y){ return x.first < y.first; });
+    of << n << " " << mod << " " << k << "\n"; for (auto& p : c) of << p.first << " "; of << "\n";
+    for (auto& p : b) of << p.second << " "; of << "\n";
+    for (auto& p : a) of << p.second << " "; of << "\n";
+  }
+}

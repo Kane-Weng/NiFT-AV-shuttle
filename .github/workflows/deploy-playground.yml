@@ -1,0 +1,59 @@
+name: Deploy playground
+
+# Builds nift_playground/web and publishes it to the gh-pages branch of the
+# Kane-Weng/nift_playground repo, which GitHub Pages serves at
+# https://kane-weng.github.io/nift_playground/.
+# Needs the repo secret PLAYGROUND_DEPLOY_KEY: the private half of an SSH key whose
+# public half is a deploy key with write access on Kane-Weng/nift_playground.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nift_playground/**'
+      - 'nift_common/**'
+      - 'nift_sensor/**'
+      - 'nift_waypoint/**'
+      - 'nift_control/**'
+      - 'nift_bringup/**'
+      - 'nift_simulation/nift_carla/**'
+      - 'maps/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-playground
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nift_playground/web/package-lock.json
+
+      - name: Build the page (Python bundle, type check, Vite)
+        working-directory: nift_playground/web
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish to Kane-Weng/nift_playground (gh-pages)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          deploy_key: ${{ secrets.PLAYGROUND_DEPLOY_KEY }}
+          external_repository: Kane-Weng/nift_playground
+          publish_branch: gh-pages
+          publish_dir: nift_playground/web/dist
+          force_orphan: true
+          commit_message: 'deploy: ${{ github.sha }}'

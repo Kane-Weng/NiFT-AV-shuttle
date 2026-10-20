@@ -1,0 +1,95 @@
+{
+  "route": "11",
+  "name": "11_se_loop_entry",
+  "description": "entry to the south-east loop, a 1.9 m corner (stalls with the shipped controller)",
+  "spawn": [
+    93.02,
+    -29.97,
+    -1.6119
+  ],
+  "goal": [
+    58.35,
+    -70.04
+  ],
+  "run_outcome": "stalled",
+  "run_detail": "still for 10.0 s (sim) in NAVIGATING, 44.5 s after the start",
+  "time_factor": 5.0,
+  "launch_command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=93.02 spawn_y:=-29.97 spawn_yaw:=-1.6119 time_factor:=5",
+  "wall_s": 21.0,
+  "t_rel_zero": 22.5,
+  "nav_start_t": 22.514601573107356,
+  "nav_end_t": null,
+  "status_after_nav": null,
+  "nav_duration_s": null,
+  "final_pose": {
+    "x": 85.54338524983076,
+    "y": -79.27736262799102,
+    "yaw": -2.7779660545344487
+  },
+  "final_dist_to_goal": 28.719489369881185,
+  "samples": {
+    "odom": 1053,
+    "cmd": 893,
+    "telemetry": 446
+  },
+  "metrics": {
+    "route": "11",
+    "name": "11_se_loop_entry",
+    "outcome": "stalled",
+    "completed": false,
+    "status_sequence": [
+      "NAVIGATING"
+    ],
+    "path_length": 80.95548707628664,
+    "path_points": 69,
+    "paths_in_bag": 1,
+    "goal": [
+      58.35,
+      -70.04
+    ],
+    "nav_duration_s": 44.58539842689264,
+    "driven": 52.20609199694425,
+    "cte_rms": 0.9122840549263325,
+    "cte_max": 3.0229721338225977,
+    "cte_mean": 0.2584947986972709,
+    "heading_err_rms_deg": 30.00725480380801,
+    "heading_err_max_deg": 74.0769892546221,
+    "steer_rate_max_deg_s": 71.60000000000407,
+    "steer_rate_over_chatter": 1,
+    "last_steer_deg": -15.0,
+    "cruise_speed": 1.9649999781470977,
+    "peak_speed": 1.9649999999999985,
+    "arrival_speed": null,
+    "arrival_vs_end": null,
+    "rest_vs_end": -26.019304769839547,
+    "rest_drift": 0.0,
+    "rest_xy": [
+      85.54338524983076,
+      -79.27736262799102
+    ],
+    "still_at_end_s": 10.399999999999991,
+    "stop_s": 50.37727610241677,
+    "stop_xy": [
+      85.54338524983076,
+      -79.27736262799102
+    ],
+    "stop_cte": 3.113292983338183,
+    "path_r_min": 1.9466834519729344,
+    "path_r_min_s": 48.0,
+    "path_r_entry": 314567.520707465,
+    "path_r_exit": 28.426486337335007,
+    "turns": [
+      {
+        "s0": 34.5,
+        "s1": 59.0,
+        "heading_change_deg": -122.77704880771405,
+        "cte_rms": 1.3652677618916471,
+        "cte_max": 3.0229721338225977,
+        "heading_err_max_deg": 74.0769892546221,
+        "steer_rate_max_deg_s": 71.60000000000407,
+        "v_min": 0.0,
+        "path_r_min": 1.9466834519729344
+      }
+    ]
+  }
+}

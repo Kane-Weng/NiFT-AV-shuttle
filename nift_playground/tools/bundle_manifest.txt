@@ -1,0 +1,38 @@
+# Files that go into the playground's Python bundle (ARCH.md section 9).
+# One glob per line, relative to the repo root. {a,b} lists alternatives, ** matches any depth.
+# Every line must match at least one file. tools/build_bundle.py refuses .env files, anything
+# outside the repo and test data. tests/test_bundle_manifest.py checks that a full session reads
+# nothing from the repo that is missing here.
+
+# nift_common
+nift_common/nift_common/{__init__,site,vehicle,can_protocol}.py
+nift_common/nift_common/vehicle.yaml
+
+# nift_sensor
+nift_sensor/nift_sensor/{__init__,beacon_node,gnss_hygiene,octane_client,shuttle_tf_node,localization_node,localization_filter}.py
+nift_sensor/config/{beacon_node,shuttle_tf,localization}.yaml
+
+# nift_waypoint
+nift_waypoint/nift_waypoint/{__init__,waypoint_node}.py
+nift_waypoint/nift_waypoint/utils/*.py
+nift_waypoint/config/waypoint_params.yaml
+
+# nift_control
+nift_control/nift_control/{__init__,trajectory_controller}.py
+nift_control/nift_control/{controllers,filters,modes,dbw_interface}/*.py
+nift_control/config/{planning,adrc_params}.yaml
+
+# nift_carla (kinematic sim)
+nift_simulation/nift_carla/nift_carla/{__init__,kinematic_sim_node,carla_dbw,shuttle_plant,kinematic_model,sim_gnss,octane_emulator,carla_geo}.py
+nift_simulation/nift_carla/config/{carla_params,gnss_faults,gnss_dead_zones,test_routes,perception_carla}.yaml
+
+# nift_bringup (profile resolution only, no launch imports)
+nift_bringup/nift_bringup/{__init__,profiles}.py
+nift_bringup/config/profiles.yaml
+
+# the playground's own Python: fake ROS, fake Lanelet2, fake socket.io, stubs, runner
+nift_playground/py/**/*.py
+nift_playground/py/fakeros/_generated/spec.json
+# projected map nodes, used by lanelet2.io.load only when the map's sha256 and origin match, so Pyodide gets
+# the same projections bit for bit
+nift_playground/py/fakelanelet2/lanelet2/node_cache/*.bin

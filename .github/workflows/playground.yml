@@ -1,0 +1,172 @@
+# Proposed CI workflow for the web playground (U11). The coordinator moves it to
+# .github/workflows/playground.yml. Until then it does not run.
+#
+# Four jobs, all without ROS (the playground's stand-ins shadow it, ARCH.md section 1):
+#   native   pytest on Python 3.10 (Humble's) and 3.12 (Pyodide's): fake ROS, messages, launch set,
+#            session, GNSS chain, and the bundle manifest audit
+#   pyodide  the worker's pacing tests, then the same scenarios natively and in Node + Pyodide 0.27.7,
+#            traces compared message by message (tests/pyodide/run_compare.mjs)
+#   web      type check, unit tests and the production build of the page, with the bundle in it
+#   e2e      the built page in headless Chrome on the real stack in Pyodide: web/scripts/e2e_pyodide.mjs
+#            (route 04 by its buttons, GNSS dropout, E-STOP, pause and step, reset) and the smoke test
+#            with --sim pyodide. Pyodide comes from the jsDelivr CDN, as on the published page.
+#
+# Each Node test folder keeps its own node_modules (tests/pyodide has its own Pyodide and wheel cache),
+# so no job shares a Pyodide install with another.
+#
+# The Lanelet2 equivalence test needs real Lanelet2 in Docker and is not part of this workflow.
+
+name: Playground
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nift_playground/**'
+      - 'nift_common/**'
+      - 'nift_sensor/**'
+      - 'nift_waypoint/**'
+      - 'nift_control/**'
+      - 'nift_simulation/nift_carla/**'
+      - 'nift_bringup/**'
+      - 'maps/lanelet2_odr2024.osm'
+      - '.github/workflows/playground.yml'
+  pull_request:
+    paths:
+      - 'nift_playground/**'
+      - 'nift_common/**'
+      - 'nift_sensor/**'
+      - 'nift_waypoint/**'
+      - 'nift_control/**'
+      - 'nift_simulation/nift_carla/**'
+      - 'nift_bringup/**'
+      - 'maps/lanelet2_odr2024.osm'
+      - '.github/workflows/playground.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: playground-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install numpy pyyaml pytest
+      - name: Test
+        # No ROS here, and none may be sourced: the stand-ins must win on sys.path.
+        run: python -m pytest nift_playground/tests -q
+
+  pyodide:
+    name: Node + Pyodide traces equal native
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: nift_playground/tests/pyodide
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'   # 22.18 or newer runs core.ts with built-in type stripping
+      - name: Install
+        run: |
+          python -m pip install numpy pyyaml
+          npm ci --no-audit --no-fund
+      # Pyodide downloads the numpy and pyyaml wheels on first use and keeps them in node_modules/pyodide.
+      - name: Cache Pyodide packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            nift_playground/tests/pyodide/node_modules/pyodide/numpy-*.whl
+            nift_playground/tests/pyodide/node_modules/pyodide/pyyaml-*.whl
+          key: pyodide-0.27.7-numpy-pyyaml
+      - name: Worker pacing tests
+        run: node --test test_pacer.mjs
+      - name: Native vs Pyodide
+        run: node run_compare.mjs --json compare.json
+      - name: Perf and memory
+        run: node perf.mjs --json perf.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pyodide-compare
+          path: |
+            nift_playground/tests/pyodide/compare.json
+            nift_playground/tests/pyodide/perf.json
+
+  web:
+    name: page build
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: nift_playground/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: npm
+          cache-dependency-path: nift_playground/web/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
+      - name: Python bundle
+        run: python ../tools/build_bundle.py
+      - name: Type check and unit tests
+        run: npx tsc --noEmit && npx vitest run
+      - name: Build
+        run: npx vite build
+      - name: First-load size
+        run: |
+          du -b dist/py/nift_bundle.zip dist/maps/*.osm
+          find dist -name '*.js' -o -name '*.css' | xargs gzip -9c | wc -c | awk '{printf "page js+css gzipped: %.2f MB\n", $1/1e6}'
+
+  e2e:
+    name: page in headless Chrome (Pyodide)
+    runs-on: ubuntu-22.04
+    needs: web
+    defaults:
+      run:
+        working-directory: nift_playground/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18'
+          cache: npm
+          cache-dependency-path: nift_playground/web/package-lock.json
+      - name: Install (with puppeteer's Chrome)
+        run: npm ci --no-audit --no-fund
+      - name: Build (bundle, type check, Vite)
+        run: npm run build
+      - name: End to end on the real stack
+        run: npm run e2e -- --no-build --out e2e_out
+      - name: Smoke test with the Pyodide worker
+        run: npm run smoke -- --sim pyodide --out smoke_out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: |
+            nift_playground/web/e2e_out
+            nift_playground/web/smoke_out
