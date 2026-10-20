@@ -41,7 +41,7 @@ The shuttle uses **two GPS antennas** (front and rear) for RTK localization. Hav
 
 `beacon_node` connects via Socket.io to the Mcity Octane RTK server, an infrastructure service that provides centimeter-accurate positioning using a fixed base station at Mcity. The node subscribes to a real-time data stream, filters for the shuttle's specific beacon IDs, and normalizes the data format. The ROS-free part (the `.env` lookup, payload normalization, and a `probe()` that checks `auth_ok` and both antennas) lives in `nift_sensor/octane_client.py`, shared with the `system.launch.py` preflight check.
 
-**Feed checks** (`nift_sensor/gnss_hygiene.py`): Octane repeats positions, delivers some late or out of order, and sometimes relays an older position under a fresh stamp. Every delivery is checked per antenna (late, stuck, older epoch, clock jump) and as a front / rear pair (antenna distance, heading change, midpoint step). Only a pair that passes is published. Every delivery also goes out on `/gnss/raw/front` / `/gnss/raw/rear` (status FIX if used, NO_FIX if dropped), and every dropped one on `/gnss/hygiene` with its verdict. By default the antenna distance is learned from 20 pairs at rest, so start the node with the shuttle standing still. `hygiene.enabled:=false` (launch: `gnss_checks:=false`) turns the checks off.
+**Feed checks** (`nift_sensor/gnss_hygiene.py`): Octane repeats positions, delivers some late or out of order, and sometimes relays an older position under a fresh stamp. Every delivery is checked per antenna (late, stuck, older epoch, clock jump) and as a front / rear pair (antenna distance, heading change, midpoint step). Only a pair that passes is published. Every delivery also goes out on `/gnss/raw/front` / `/gnss/raw/rear` (status FIX if used, NO_FIX if dropped), and every dropped one on `/gnss/hygiene` with its verdict. By default the antenna distance is learned at start-up, from the latest 20 pairs once 3/4 of them agree within 5 cm. At rest every pair counts. While driving only pairs whose stamps are close enough to come from one receiver epoch count, so a node restarted while driving also recovers (after 2 to 8 s in the sim's feed model, longer at top speed). A distance learned while driving is learned again at the next stop. `hygiene.enabled:=false` (launch: `gnss_checks:=false`) turns the checks off.
 
 **Simulation** runs the same code: the CARLA bridge (`nift_carla`) serves the same Socket.io protocol from its Octane emulator, and `system.launch.py` (any `mode: sim` profile) points `MCITY_OCTANE_*` at it.
 
@@ -75,6 +75,8 @@ The rest of the stack lives in the **map frame** (a fixed, UTM-projected coordin
 2. `/gnss/heading_deg` is a compass bearing from true north, but the map's +y is UTM grid north. The two differ by the grid convergence (1.82° at Mcity); the node measures it at the map origin and uses it to turn the bearing into a map yaw (0 = +x, counter-clockwise).
 3. The antenna sits `gnss.offset_x` ahead of `base_link` (mid-wheelbase). Rotated by the yaw and subtracted, that gives `base_link`'s position, which with the yaw is the `map → base_link` transform.
 
+The fix and the heading of one sample arrive as two messages. `beacon_node` sends the fix first, so the node sends the transform when the heading arrives, with the fix that came just before it. Each fix is paired with the heading of its own sample, and nothing is sent before the first heading. A fix whose heading is lost is skipped.
+
 Nothing else publishes into this TF chain (no wheel odometry, on the shuttle or in CARLA), so the node publishes `map → base_link` directly.
 
 ---
@@ -91,7 +93,7 @@ Only one node publishes `map → base_link`; the system launch picks the mode:
 | `ekf` | `localization_node` | publishes TF, odom and status; the controller follows the status |
 | `shadow` | `shuttle_tf_node` | odom and status only, for recording beside the direct transform |
 
-**Open question: the antenna lever arm on the shuttle.** The antennas' positions (`gnss_front_x` / `gnss_rear_x`, ±1.041 m from `base_link`) come from `nift_common`'s `vehicle.yaml`, which the URDF, the sims, `shuttle_tf_node` and `localization_node` all use. They have not been measured on the shuttle yet (driving data suggest 1.2–1.6 m); once they are, change them there.
+**Not measured: the antenna lever arm on the shuttle.** The antennas' positions (`gnss_front_x` / `gnss_rear_x`, ±1.041 m from `base_link`) come from `nift_common`'s `vehicle.yaml`, which the URDF, the sims, `shuttle_tf_node` and `localization_node` all use. The 1.041 m is half the wheelbase, a placeholder, not a measurement (driving data suggest 1.2–1.6 m for the front antenna). A wrong value shifts the pose along the heading by the error. To measure it, use the centre of each antenna (its phase centre, often marked on the housing). Measure along the centre line, level with the ground, from the front axle (the line through the front wheel centres) to the front antenna, and from the rear axle to the rear antenna. Then `gnss_front_x` = 1.041 m + the front antenna's distance ahead of the front axle, and `gnss_rear_x` = −1.041 m − the rear antenna's distance behind the rear axle (a distance the other way counts negative). Note any sideways offset from the centre line too. Change the values in `vehicle.yaml` only.
 
 ---
 
@@ -148,6 +150,8 @@ Real-world credentials come from `nift_sensor/.env` (copy `.env_example`; `.env`
 
 `config/localization.yaml` holds the shuttle's values (mode, GNSS delay, steering and brake inputs, filter thresholds). The geometry and the map origin default to `nift_common`.
 
+`filter.bridge_s` (1.5 s) must stay at least 0.3 s below `beacon_node`'s `hygiene.reset_s` (2.0 s). After `reset_s` without a good pair, the feed checks take the next consistent pair, even a wrong one such as swapped antennas or a held offset. The filter has to be LOST by then, so the shuttle stops instead of following it. On the sim's fault bench, `bridge_s` 2.0 s already followed a held 1 m offset. A test checks the two files.
+
 ### lidar_node
 
 `system.launch.py` loads `config/perception.yaml` on the shuttle and `nift_carla`'s `config/perception_carla.yaml` in simulation (`perception_yaml:=` for another file); the code default applies to anything a file leaves out.
@@ -169,7 +173,7 @@ Real-world credentials come from `nift_sensor/.env` (copy `.env_example`; `.env`
 
 | Parameter | Default | Description |
 |---|---|---|
-| `gnss.offset_x` | `1.041` m (`vehicle.yaml` `gnss_front_x`) | Front GNSS antenna distance ahead of `base_link` (mid-wheelbase); see the open question above |
+| `gnss.offset_x` | `1.041` m (`vehicle.yaml` `gnss_front_x`) | Front GNSS antenna distance ahead of `base_link` (mid-wheelbase); not measured, see above |
 | `gnss.offset_y` | `0.0` m | Lateral GNSS offset |
 | `map_origin_lat` | `42.3005` (`nift_common.site`) | UTM projection origin latitude (Mcity) |
 | `map_origin_lon` | `−83.6987` (`nift_common.site`) | UTM projection origin longitude (Mcity) |
@@ -184,7 +188,7 @@ colcon build --packages-up-to nift_sensor
 colcon test --packages-select nift_sensor && colcon test-result --verbose
 ```
 
-Unit tests cover the feed checks, the localization filter and node, the Octane helpers and the heading chain; flake8 and pep257 run too.
+Unit tests cover the feed checks (including a restart while driving), the localization filter and node, the Octane helpers and the heading chain (each fix paired with its own sample's heading); flake8 and pep257 run too.
 
 ---
 

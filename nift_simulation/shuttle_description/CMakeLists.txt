@@ -14,4 +14,10 @@ install(
   DESTINATION share/${PROJECT_NAME}/
 )
 
+if(BUILD_TESTING)
+  # The URDF tree, the RViz frames and robot_view.launch.py's defaults (test/test_description.py)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_description test/test_description.py ENV PYTHONDONTWRITEBYTECODE=1)
+endif()
+
 ament_package()

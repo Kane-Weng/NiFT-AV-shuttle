@@ -16,6 +16,7 @@ More depth on the wiki: [shuttle_description](https://github.com/Kane-Weng/NiFT-
 | `rviz/navigation.rviz` | The main operator view: map, route, LiDAR, obstacles, and the three panels from [`nift_rviz_plugins`](../nift_rviz_plugins) |
 | `rviz/navigation_topdown.rviz` | A second, render-only window that follows the shuttle from above |
 | `rviz/robot_view.rviz` | The view that `robot_view.launch.py` opens |
+| `test/test_description.py` | Checks that `base_link` is the only root of the model, that the RViz views use frames the stack publishes, and that `robot_view.launch.py` defaults to wall time |
 
 ## The model
 
@@ -30,10 +31,10 @@ The body is drawn as simple boxes with the real outer size (3.055 × 1.588 × 1.
 ```bash
 colcon build --symlink-install --packages-up-to shuttle_description
 source install/setup.bash
-ros2 launch shuttle_description robot_view.launch.py use_sim_time:=false
+ros2 launch shuttle_description robot_view.launch.py
 ```
 
-`robot_view.rviz` uses `map` as its fixed frame, and this launch file publishes no `map` frame. Set **Global Options → Fixed Frame** to `base_link` to see the model on its own.
+`robot_view.rviz` uses `base_link` as its fixed frame, because this launch file publishes no `map` frame. `use_sim_time` defaults to false, as on the shuttle, and applies to all three nodes. Pass `use_sim_time:=true` only next to a simulator that publishes `/clock`.
 
 In the full stack, `nift_bringup` starts `robot_state_publisher` with this URDF in every mode and opens `rviz/navigation.rviz` (and `navigation_topdown.rviz` with `rviz_layout:=split`).
 

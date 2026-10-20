@@ -12,25 +12,25 @@
     -62.95
   ],
   "run_outcome": "safe_stop",
-  "run_detail": "SAFE_STOP after 24.6 s (sim)",
+  "run_detail": "SAFE_STOP after 24.7 s (sim)",
   "time_factor": 1.0,
   "launch_command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=101.52 spawn_y:=166.85 spawn_yaw:=-1.6123 time_factor:=1 gnss_faults:=outage_30s_straight",
-  "wall_s": 41.9,
-  "t_rel_zero": 5.7,
-  "nav_start_t": 5.702069333384134,
-  "nav_end_t": 30.251328840496367,
+  "wall_s": 39.8,
+  "t_rel_zero": 4.3,
+  "nav_start_t": 4.301662206448474,
+  "nav_end_t": 28.851949267149838,
   "status_after_nav": "SAFE_STOP",
-  "nav_duration_s": 24.549259507112232,
+  "nav_duration_s": 24.550287060701365,
   "final_pose": {
-    "x": 99.2184852928132,
-    "y": 120.68174103804758,
-    "yaw": -1.6119442359678646
+    "x": 99.21855068881726,
+    "y": 120.68173754606035,
+    "yaw": -1.611949215258491
   },
-  "final_dist_to_goal": 183.77435072936277,
+  "final_dist_to_goal": 183.77434981590812,
   "samples": {
-    "odom": 646,
-    "cmd": 616,
-    "telemetry": 309
+    "odom": 637,
+    "cmd": 615,
+    "telemetry": 308
   },
   "metrics": {
     "route": "01",
@@ -48,33 +48,33 @@
       91.98,
       -62.95
     ],
-    "nav_duration_s": 24.549259507112232,
-    "driven": 46.232105489926234,
-    "cte_rms": 0.024536425983609975,
-    "cte_max": 0.11789510976008721,
-    "cte_mean": 0.0026083028993170794,
-    "heading_err_rms_deg": 0.6542553443420612,
-    "heading_err_max_deg": 2.329405677035652,
-    "steer_rate_max_deg_s": 4.999999999999929,
+    "nav_duration_s": 24.550287060701365,
+    "driven": 46.23209550631828,
+    "cte_rms": 0.024957821404752015,
+    "cte_max": 0.11893338371752794,
+    "cte_mean": 0.002194086157304299,
+    "heading_err_rms_deg": 0.6609528631508447,
+    "heading_err_max_deg": 2.3344377134069987,
+    "steer_rate_max_deg_s": 6.800000000000021,
     "steer_rate_over_chatter": 0,
     "last_steer_deg": 0.0,
     "cruise_speed": 1.9649999985914943,
     "peak_speed": 1.9649999999999985,
     "arrival_speed": null,
     "arrival_vs_end": null,
-    "rest_vs_end": -183.77410022185475,
+    "rest_vs_end": -183.7740994200145,
     "rest_drift": 0.0,
     "rest_xy": [
-      99.2184852928132,
-      120.68174103804758
+      99.21855068881726,
+      120.68173754606035
     ],
-    "still_at_end_s": 2.1999999999999957,
-    "stop_s": 45.187421305139715,
+    "still_at_end_s": 2.1000000000000014,
+    "stop_s": 45.18742210691758,
     "stop_xy": [
-      99.2184852928132,
-      120.68174103804758
+      99.21855068881726,
+      120.68173754606035
     ],
-    "stop_cte": 0.00044541027621801724,
+    "stop_cte": 0.00051089453748885,
     "path_r_min": 157133.80625125507,
     "path_r_min_s": 175.0,
     "path_r_entry": 191.93399952534443,

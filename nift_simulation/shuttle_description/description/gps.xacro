@@ -21,7 +21,8 @@
 
     </xacro:macro>
 
-    <!-- Antenna mounts: nift_common/vehicle.yaml (veh, loaded in vehicle.xacro); shuttle_tf_node uses the same lever arm -->
+    <!-- Antenna mounts: nift_common/vehicle.yaml (veh, loaded in vehicle.xacro); shuttle_tf_node uses the same lever arm.
+         Not measured on the shuttle yet: gnss_front_x / gnss_rear_x are placeholders (half the wheelbase) -->
     <xacro:gps_beacon prefix="1" x_pos="${veh.gnss_front_x}" topic_name="data_1" />
     <xacro:gps_beacon prefix="2" x_pos="${veh.gnss_rear_x}" topic_name="data_2" />
 

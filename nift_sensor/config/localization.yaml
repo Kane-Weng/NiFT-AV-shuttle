@@ -22,7 +22,9 @@ localization_node:
     filter:                     # localization_filter.FilterConfig; the rest keep their defaults
       # status: OK -> DEGRADED (bridging on the model) -> LOST (trajectory_controller SAFE_STOPs)
       ok_age_s: 0.5             # no accepted position this long -> DEGRADED
-      bridge_s: 1.5             # ... this long (from the last position's measurement time) -> LOST
+      bridge_s: 1.5             # ... this long (from the last position's measurement time) -> LOST. Keep it
+      #                           >= 0.3 s below beacon_node.yaml's hygiene.reset_s (2.0), which re-anchors on any
+      #                           consistent pair, a wrong one too (bridge_s 2.0 followed a held 1 m offset)
       bridge_m: 3.0             # ... or this far on the model -> LOST
       settle_s: 0.5             # DEGRADED (settling) this long after a (re)start
       # which GNSS positions it takes

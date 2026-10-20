@@ -17,11 +17,11 @@
   "map_file": null,
   "timeout_s": 240.0,
   "stall_s": 10.0,
-  "started": "2026-10-20T06:46:49",
+  "started": "2026-10-20T19:11:42",
   "ros_domain_id": "",
   "git": {},
   "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=-36.16 spawn_y:=20.29 spawn_yaw:=-1.7528 time_factor:=5",
   "outcome": "arrived",
-  "detail": "NAVIGATING -> IDLE after 113.1 s (sim), at rest",
-  "wall_s": 34.5
+  "detail": "NAVIGATING -> IDLE after 112.8 s (sim), at rest",
+  "wall_s": 34.1
 }

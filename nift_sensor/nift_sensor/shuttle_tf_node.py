@@ -15,6 +15,12 @@ Description:
   wheel-odometry TF publisher, on the shuttle or in CARLA), so a direct
   transform is safe.
 
+  Pairing: beacon_node publishes each sample as /gnss/fix, then /gnss/heading_deg.
+  The transform goes out when the heading arrives, with the fix that came just
+  before it, so each fix is paired with the heading of the same sample. A fix
+  without a heading after it (the heading was lost, or none came yet) is not
+  sent, and the next fix replaces it.
+
 Usage:
   ros2 run nift_sensor shuttle_tf_node
 """
@@ -87,6 +93,8 @@ class ShuttleDynamicBroadcaster(Node):
             Float64, '/gnss/heading_deg', self.heading_callback, rclpy.qos.qos_profile_sensor_data)
 
         self.last_fix_time = None
+        self.pending_fix = None     # the latest /gnss/fix, waiting for its sample's heading
+        self.tf_sent = False
         self.diag_updater = diagnostic_updater.Updater(self)
         self.diag_updater.setHardwareID('tf_broadcaster')
         self.diag_updater.add('TF Bridge', self._diagnostics_callback)
@@ -95,6 +103,10 @@ class ShuttleDynamicBroadcaster(Node):
         if self.last_fix_time is None:
             stat.summary(
                 diagnostic_msgs.msg.DiagnosticStatus.WARN, 'Waiting for initial /gnss/fix...')
+        elif not self.tf_sent:
+            stat.summary(
+                diagnostic_msgs.msg.DiagnosticStatus.WARN,
+                'Fixes arrive, waiting for /gnss/heading_deg (no TF sent yet)')
         else:
             time_diff = (self.get_clock().now() - self.last_fix_time).nanoseconds / 1e9
             if time_diff > 2.0:
@@ -108,10 +120,20 @@ class ShuttleDynamicBroadcaster(Node):
     def heading_callback(self, msg: Float64):
         # Convert compass heading (0=true north, CW) to map yaw (0=+x, CCW)
         self.current_yaw_enu = self.true_north_yaw - math.radians(msg.data)
+        # beacon_node sends a sample's fix first, then its heading. So the fix still
+        # waiting here is the one of this heading's sample.
+        if self.pending_fix is not None:
+            fix, self.pending_fix = self.pending_fix, None
+            self._publish_tf(fix)
 
     def gps_fix_callback(self, msg: NavSatFix):
         self.last_fix_time = self.get_clock().now()
+        # Wait for the heading of the same sample (heading_callback). Pairing the fix
+        # with the heading already here would use the previous sample's heading.
+        self.pending_fix = msg
 
+    def _publish_tf(self, msg: NavSatFix):
+        """Send map -> base_link from one fix and the heading of its sample."""
         # 1. lat/lon → UTM → local map frame (no display offset; map origin = map_origin_lat/lon)
         utm = self.projector.forward(
             lanelet2.core.GPSPoint(msg.latitude, msg.longitude, msg.altitude)
@@ -139,6 +161,7 @@ class ShuttleDynamicBroadcaster(Node):
         t.transform.rotation.w = math.cos(pub_yaw / 2.0)
 
         self.tf_broadcaster.sendTransform(t)
+        self.tf_sent = True
 
 
 def main():

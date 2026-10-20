@@ -235,9 +235,10 @@ class BeaconNode(Node):
         now_ns = self.get_clock().now().nanoseconds
         with self.data_lock:
             if self.hygiene is not None:
-                learning = self.hygiene.baseline_m is None
+                before = (self.hygiene.baseline_m, self.hygiene.baseline_moving)
                 verdict = self.hygiene.add(n, now_ns / 1e9)
-                baseline = self.hygiene.baseline_m if learning else None
+                learned = (self.hygiene.baseline_m, self.hygiene.baseline_moving)
+                learned = learned if learned != before else None
             else:
                 prev = self.latest_by_id.get(beacon_id)
                 # An event that repeats the previous position (same `updated`) is not fresh data
@@ -245,11 +246,13 @@ class BeaconNode(Node):
                         and n.get('ts') == prev.get('ts'))
                 n['rx_ns'] = prev['rx_ns'] if same else now_ns
                 self.latest_by_id[beacon_id] = n
-                verdict, baseline = 'accepted', None
+                verdict, learned = 'accepted', None
         self._publish_raw(antenna, n, verdict in USED)
-        if baseline is not None:
+        if learned is not None:
+            baseline, moving = learned
+            how = 'learned while moving, learned again at the next stop' if moving else 'learned'
             self.get_logger().info(
-                f'antenna baseline {baseline:.3f} m (learned): feed checks active')
+                f'antenna baseline {baseline:.3f} m ({how}): feed checks active')
         if verdict not in TOPIC_QUIET:
             self.pub_hygiene.publish(String(data=json.dumps(
                 {'antenna': antenna, 'verdict': verdict, 'updated': n.get('ts'),
@@ -394,7 +397,10 @@ class BeaconNode(Node):
             return stat
         with self.data_lock:
             counts, baseline = dict(self.hygiene.counts), self.hygiene.baseline_m
+            moving = self.hygiene.baseline_moving
         stat.add('antenna baseline (m)', 'learning' if baseline is None else f'{baseline:.3f}')
+        if moving:
+            stat.add('antenna baseline learned', 'while moving (learned again at the next stop)')
         for k in ('accepted', 'repeat', 'reanchored', 'out_of_order', 'stuck', 'older_position',
                   'baseline', 'heading', 'step', 'time_jump'):
             stat.add(f'feed check {k}', str(counts.get(k, 0)))

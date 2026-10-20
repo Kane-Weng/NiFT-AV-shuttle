@@ -6,10 +6,13 @@ at ~15 Hz per antenna with fresh millisecond stamps, positions rounded to 7 deci
 """
 from datetime import datetime, timedelta, timezone
 import math
+from pathlib import Path
+import random
 
 from nift_common.vehicle import ShuttleConfig
 from nift_sensor.gnss_hygiene import BeaconHygiene, enu_offset, HygieneConfig, stamp_s
 import pytest
+import yaml
 
 SHUTTLE = ShuttleConfig()
 LAT0, LON0 = 42.3, -83.7
@@ -61,12 +64,14 @@ def antenna(ep, k, swap=False):
     return round(lat, 7), round(lon, 7)
 
 
-def feed(epochs, relay=0.066, phase=(0.0, 0.031), edit=None):
+def feed(epochs, relay=0.066, phase=(0.0, 0.031), edit=None, jitter=None):
     """
     Deliveries [(rx, normalize()-style dict)] of both antennas.
 
     Every `relay` s each antenna's latest epoch, stamped with the relay time, arriving 25 ms later.
-    edit(k, t, ep, d) may change or drop (return None) a delivery.
+    edit(k, t, ep, d) may change or drop (return None) a delivery. jitter: a random.Random. The
+    relay interval then varies as on the shuttle (61.6 +- 16.9 ms, sim_gnss.FeedConfig), so the
+    two antennas' relays drift against each other.
     """
     out = []
     t_end = epochs[-1][0]
@@ -79,7 +84,7 @@ def feed(epochs, relay=0.066, phase=(0.0, 0.031), edit=None):
             d = edit(k, t, ep, d) if edit else d
             if d is not None:
                 out.append((t + 0.025, d))
-            t += relay
+            t += relay if jitter is None else min(0.15, max(0.01, jitter.gauss(0.0616, 0.0169)))
     return sorted(out, key=lambda x: x[0])
 
 
@@ -142,11 +147,78 @@ def test_older_epoch_under_a_fresh_stamp_is_dropped():
     assert hyg.counts['older_position'] == 1 and rejected(out) == []
 
 
-def test_baseline_is_learned_at_rest_only():
+def _lag(k_lag, lag_s, t1, epochs):
+    """Return an edit(): until t1, antenna k_lag sends its position of lag_s(t) ago."""
+    def edit(k, t, ep, d):
+        if k == k_lag and t < t1:
+            older = [x for x in epochs if x[0] <= ep[0] - lag_s(t)] or epochs[:1]
+            d['lat'], d['lon'] = antenna(older[-1], k)
+        return d
+    return edit
+
+
+@pytest.mark.parametrize('v', [1.0, 2.0, 3.5])
+def test_restart_while_driving_learns_the_baseline(v):
+    """
+    Learn the baseline after a restart while driving.
+
+    beacon_node used to learn nothing (and publish nothing) until a stop. Pairs of one receiver
+    epoch (close stamps) give the length while moving. It is learned again at the stop.
+    """
+    epochs = track([(10, v, 0.0), (6, v, 1 / R_TURN), (4, v, 0.0), (3, 0.0, 0.0)], rest=0)
+    hyg, out = run(feed(epochs, jitter=random.Random(3)))
+    acc = [rx for rx, verdict in out if verdict in ('accepted', 'reanchored')]
+    assert acc and acc[0] < 10.0                        # while still driving
+    assert rejected(out) == []
+    assert hyg.baseline_m == pytest.approx(2 * HALF, abs=0.02)
+    assert not hyg.baseline_moving                      # learned again at rest
+    hyg, _ = run([x for x in feed(epochs, jitter=random.Random(3)) if x[0] < 19.0])
+    assert hyg.baseline_moving and hyg.baseline_m == pytest.approx(2 * HALF, abs=0.02)
+
+
+def test_pairs_an_epoch_apart_are_not_learned_from():
+    """
+    Wait with learning while stamps cannot tell one epoch from the next.
+
+    A fixed relay phase puts the two antennas' stamps 31 to 35 ms apart. At 2 m/s that is 6 to 7
+    cm of motion, too much to tell a pair of one epoch from one an epoch apart. Learning waits,
+    here for the stop.
+    """
     hyg, out = run(feed(track([(4, 2.0, 0.0), (3, 0.0, 0.0)], rest=0)))   # starts while driving
     assert hyg.accepted_rx > 4.0 and not [v for rx, v in out if rx < 4.0 and v in ('accepted',
                                                                                    'reanchored')]
     assert hyg.baseline_m == pytest.approx(2 * HALF, abs=0.02)
+
+
+def test_backlog_while_learning_does_not_bias_the_baseline():
+    """
+    Keep a backlog out of the learned baseline.
+
+    Moving, a backlog after a gap sends old positions under fresh stamps, so close stamps do not
+    make a good pair. Those pairs disagree with the rest. The median waits until 3/4 agree.
+    """
+    epochs = track([(12, 2.0, 0.0)], rest=0)
+    backlog = _lag(1, lambda t: 0.5 - t % 0.5, 3.0, epochs)    # rear: 6 backlogs, drain 1 s per s
+    hyg, out = run(feed(epochs, jitter=random.Random(5), edit=backlog))
+    assert hyg.baseline_m == pytest.approx(2 * HALF, abs=0.02)
+    assert hyg.accepted_rx > 11.0 and rejected(out, 4.0) == []
+
+
+def test_lagging_antenna_while_learning_is_corrected_at_the_next_stop():
+    """
+    Correct a baseline learned with one antenna lagging at the next stop.
+
+    The rear lags 0.3 s through the whole moving learning, so every moving pair is 0.6 m long,
+    alike. At the stop the baseline is learned again at rest and the feed is accepted there.
+    """
+    epochs = track([(8, 2.0, 0.0), (4, 0.0, 0.0)], rest=0)
+    ds = feed(epochs, jitter=random.Random(7), edit=_lag(1, lambda t: 0.3, 8.0, epochs))
+    hyg, _ = run([x for x in ds if x[0] < 7.5])
+    assert hyg.baseline_moving                              # the known limit: learned 0.6 m long
+    assert hyg.baseline_m == pytest.approx(2 * HALF + 0.6, abs=0.1)
+    hyg, out = run(ds)
+    assert hyg.baseline_m == pytest.approx(2 * HALF, abs=0.02) and not hyg.baseline_moving
+    assert [v for rx, v in out if rx > 10.5].count('accepted') > 10
 
 
 def test_learning_then_fixed_baseline():
@@ -266,7 +338,6 @@ def test_one_antenna_jump(east, north, why):
 
 
 def test_rtk_float_scatter_is_mostly_rejected():
-    import random
     rng = random.Random(1)
 
     def scatter(k, t, ep, d):
@@ -305,3 +376,20 @@ def test_clock_step_and_late_burst_are_time_jumps_not_rejections():
                                                                                     0.0)]))]
     hyg, out = run(sorted(burst, key=lambda x: x[0]))
     assert hyg.counts['time_jump'] >= 2 and rejected(out) == []
+
+
+def test_filter_is_lost_before_the_feed_checks_reanchor():
+    """
+    Keep localization_node's bridge shorter than the feed checks' reset_s.
+
+    After reset_s without a good pair, the checks re-anchor on the next consistent pair, a
+    persistent wrong one too (a swap, a held offset). The filter must be LOST, so the shuttle
+    stops, before that. On the sim's fault bench, bridge_s 2.0 followed a held 1 m offset and
+    bridge_s 2.5 took a 3 s antenna swap (2.4 m pose error while not LOST).
+    """
+    config = Path(__file__).resolve().parents[1] / 'config'
+    beacon = yaml.safe_load((config / 'beacon_node.yaml').read_text())['/**']['ros__parameters']
+    loc = yaml.safe_load((config / 'localization.yaml').read_text())
+    bridge_s = loc['localization_node']['ros__parameters']['filter']['bridge_s']
+    assert bridge_s + 0.3 <= beacon['hygiene']['reset_s']
+    assert bridge_s + 0.3 <= HygieneConfig().reset_s       # the code default too

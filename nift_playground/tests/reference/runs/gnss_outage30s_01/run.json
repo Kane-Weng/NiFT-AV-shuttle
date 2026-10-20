@@ -17,11 +17,11 @@
   "map_file": null,
   "timeout_s": 240.0,
   "stall_s": 10.0,
-  "started": "2026-10-20T06:47:37",
+  "started": "2026-10-20T19:13:12",
   "ros_domain_id": "",
   "git": {},
   "command": "ros2 launch nift_bringup system.launch.py profile:=sim_kinematic rviz:=false spawn_x:=101.52 spawn_y:=166.85 spawn_yaw:=-1.6123 time_factor:=1 gnss_faults:=outage_30s_straight",
   "outcome": "safe_stop",
-  "detail": "SAFE_STOP after 24.6 s (sim)",
-  "wall_s": 41.9
+  "detail": "SAFE_STOP after 24.7 s (sim)",
+  "wall_s": 39.8
 }

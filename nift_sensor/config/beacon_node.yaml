@@ -13,12 +13,15 @@
       time_jump_s: 0.3            # stamp interval vs arrival interval differing by more = a time jump (re-anchor)
       order_tol_m: 0.05           # moving, a position this far behind the antenna's own track = an older epoch
       # per front / rear pair
-      antenna_baseline_m: 0.0     # front - rear antenna distance; 0 = learn it at rest at start-up
-      baseline_learn_pairs: 20    # ... from this many pairs (median)
+      antenna_baseline_m: 0.0     # front - rear antenna distance; 0 = learn it at start-up, at rest or while driving
+      #                             (then learned again at the next stop)
+      baseline_learn_pairs: 20    # ... from this many pairs (median, once 3/4 of them agree within 5 cm)
       baseline_tol_m: 0.15        # pair distance within this of it (+ what the speed explains)
       heading_tol_deg: 5.0        # heading change vs the last good pair (+ what the distance driven allows)
       step_tol_m: 0.3             # antenna midpoint jump across the direction of travel
       along_tol_m: 0.5            # ... and along it
-      reset_s: 2.0                # no good pair this long -> take the next consistent one (re-anchor)
+      reset_s: 2.0                # no good pair this long -> take the next consistent one (re-anchor). Keep it
+      #                             >= 0.3 s above localization.yaml's filter.bridge_s: the filter must be LOST
+      #                             (the shuttle stopping) before a wrong but consistent pair is taken
       pair_window_s: 0.5          # front and rear stamps at most this far apart to form a pair
       sync_s: 0.15                # ... and this close for the pair to become the reference

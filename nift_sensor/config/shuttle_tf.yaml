@@ -1,6 +1,6 @@
 shuttle_dynamic_broadcaster:
   ros__parameters:
     # gnss.offset_x (front antenna ahead of base_link) and the map origin: the node's defaults come from nift_common
-    # (vehicle.yaml gnss_front_x, site.py)
+    # (vehicle.yaml gnss_front_x, site.py). gnss_front_x is a placeholder, not measured on the shuttle yet
     gnss:
       offset_y: 0.0   # meters — lateral offset (0 = centered)

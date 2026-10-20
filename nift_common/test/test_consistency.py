@@ -3,12 +3,14 @@ Copies of the shared facts in files that cannot import nift_common still match i
 
 Each copy (C++, TypeScript, the Blender / Unreal build scripts) carries an `owner: nift_common/...`
 comment on its line. The URDF loads vehicle.yaml itself and must keep no copies. The sources are
-read from the repository, so these tests skip where only the install is present.
+read from the repository. In the repository a missing file fails its test, because the check would
+be lost. Only outside it (an install alone) do the tests skip, with a warning that says so.
 """
 
 import math
 from pathlib import Path
 import re
+import warnings
 import xml.etree.ElementTree as ET
 
 from nift_common import site
@@ -18,7 +20,8 @@ import yaml
 
 VEH = yaml.safe_load(YAML_PATH.read_text())
 NUM = r'(-?\d+(?:\.\d+)?)'
-XACRO_DIR = 'nift_simulation/shuttle_description/description/'
+DESCRIPTION = 'nift_simulation/shuttle_description/'
+XACRO_DIR = DESCRIPTION + 'description/'
 BUILD_SCRIPTS = 'nift_simulation/nift_carla/source_build/scripts/'
 
 
@@ -33,10 +36,19 @@ def _repo_root():
 ROOT = _repo_root()
 
 
+def _skip_loudly(reason):
+    """Skip with a warning, so the skip shows in the test output and not only in its counts."""
+    warnings.warn(f'nift_common consistency check NOT run: {reason}', stacklevel=2)
+    pytest.skip(reason)
+
+
 def _source(rel):
-    """Return a repository file's text; skip when the sources are not here."""
-    if ROOT is None or not (ROOT / rel).is_file():
-        pytest.skip(f'{rel}: sources not found')
+    """Return a repository file's text; fail if it is missing from the repository."""
+    if ROOT is None:
+        _skip_loudly(f'{rel}: not run from the repository (sources not found)')
+    if not (ROOT / rel).is_file():
+        pytest.fail(f'{rel} is missing: it moved or was renamed, so update this test to keep '
+                    'checking its copy of the shared facts')
     return (ROOT / rel).read_text()
 
 
@@ -95,18 +107,19 @@ def test_urdf_keeps_no_copies(name):
         assert not re.search(rf'(?<![\d.]){re.escape(value)}(?!\d)', text), f'{name}: {value}'
 
 
-def test_urdf_expands_to_vehicle_yaml():
-    xacro = pytest.importorskip('xacro')
-    ament = pytest.importorskip('ament_index_python.packages')
-    for pkg in ('nift_common', 'shuttle_description'):     # $(find ...) in the xacro files
-        try:
-            ament.get_package_share_directory(pkg)
-        except ament.PackageNotFoundError:
-            pytest.skip(f'{pkg} not installed')
-    xacro_file = ROOT / XACRO_DIR / 'vehicle.urdf.xacro' if ROOT else None
-    if xacro_file is None or not xacro_file.is_file():
-        pytest.skip('URDF sources not found')
-    urdf = ET.fromstring(xacro.process_file(str(xacro_file)).toxml())
+def test_urdf_expands_to_vehicle_yaml(tmp_path, monkeypatch):
+    _source(XACRO_DIR + 'vehicle.urdf.xacro')
+    try:
+        from xacro import process_file, substitution_args
+    except ImportError:
+        _skip_loudly('xacro is not installed (ros-humble-xacro), so the URDF cannot be expanded')
+    # $(find ...) from the repository, not the install: shuttle_description is no dependency of
+    # nift_common, so a build of nift_common alone does not install it
+    (tmp_path / 'config').mkdir()
+    (tmp_path / 'config/vehicle.yaml').symlink_to(ROOT / 'nift_common/nift_common/vehicle.yaml')
+    share = {'nift_common': tmp_path, 'shuttle_description': ROOT / DESCRIPTION}
+    monkeypatch.setattr(substitution_args, '_eval_find', lambda pkg: str(share[pkg]))
+    urdf = ET.fromstring(process_file(str(ROOT / XACRO_DIR / 'vehicle.urdf.xacro')).toxml())
 
     def joint(name, tag='origin', attr='xyz'):
         elem = urdf.find(f"joint[@name='{name}']/{tag}")
@@ -122,3 +135,7 @@ def test_urdf_expands_to_vehicle_yaml():
         -(VEH['base_link_height'] - VEH['wheel_radius'])]
     assert joint('front_left_steering_joint', 'limit', 'upper') == [
         math.radians(VEH['max_steering_deg'])]
+    # base_link is the root: the localization publishes map -> base_link, so the URDF must not
+    # give it a parent as well
+    children = {j.find('child').get('link') for j in urdf.findall('joint')}
+    assert {link.get('name') for link in urdf.findall('link')} - children == {'base_link'}

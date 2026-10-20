@@ -46,6 +46,8 @@ In every case and both modes the outcome and the status sequence are the referen
 
 With `compare_runs.py` as it is (t_rel axis, whole track), shipped route 03 gives the numbers known before, 22.7 cm at the same time and 8.5 cm track.
 
+**Re-recorded references (2026-10-20, later).** After the shuttle_tf_node fix above, the `direct_*` and GNSS-loss references were recorded again (`tests/reference/README.md` says how). The tick order is now the default, so shipped and ros_order are the same run. Against the new references: direct_01 to direct_04 within 1.5 cm while navigating and 0.3 cm in shape, direct_05 10.0 cm and 0.15 s (the fastest of four ROS runs of route 05; the other three are within 4 to 6 cm), direct_11 stalls at the same place (4.1 cm), direct_12 1.8 cm in shape, and both GNSS-loss runs stop within 6 ms of the reference. All 32 tests pass.
+
 ## Why the shipped playground is off
 
 ### 1. The controller sees GNSS two ticks older on ROS (the main cause)
@@ -89,7 +91,7 @@ The remaining 2 to 3 cm on routes 03 and 05 start at a single steering command t
 | first-frame race | Kane (node finding, no change made) | `nift_carla/kinematic_sim_node.py` `_lockstep_wait` | Lockstep does not cover the first 0x101 frame, so 3 of 23 runs start a tick late. Harmless, but it makes a ROS run repeat to 10 cm, not 0.5 cm. Waiting while a start is pending would make runs repeat exactly. |
 | µm noise | lanelet2 (low priority) | `tests/lanelet2/` | Check `forward(reverse(p)) - p` of real Lanelet2 at the micrometre level against the stand-in's, if exact equality of steering commands ever matters. |
 
-Also seen, not compared. The playground's very first TF (t_rel -0.15 s, before any navigation) has yaw 0 and sits 1.08 m off along x, because shuttle_tf_node gets the first fix before the first heading (the sim-gnss agent's node finding). The ROS bags do not show it. It is gone one tick later and never reaches the planner or the controller.
+Also seen, not compared. The playground's very first TF (t_rel -0.15 s, before any navigation) had yaw 0 and sat 1.08 m off along x, because shuttle_tf_node got the first fix before the first heading (the sim-gnss agent's node finding). Fixed later the same day: the node now pairs each fix with the heading of its own sample and sends nothing before the first heading.
 
 ## The test
 

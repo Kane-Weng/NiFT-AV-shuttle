@@ -22,8 +22,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'use_sim_time',
-            default_value='true',
-            description='Use sim time if true',
+            default_value='false',
+            description='Use sim time if true (only with a simulator publishing /clock)',
         ),
     ]
 
@@ -42,9 +42,10 @@ def generate_launch_description():
             ),
         ]
     )
+    sim_time = {'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}  # every node, one clock
     robot_description = {
         "robot_description": ParameterValue(robot_description_content, value_type=str),
-        'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+        **sim_time,
     }
 
     # Pointing to the rviz file you had in your config folder
@@ -55,6 +56,7 @@ def generate_launch_description():
     joint_state_publisher_node = Node(
         package="joint_state_publisher_gui",
         executable="joint_state_publisher_gui",
+        parameters=[sim_time],
         condition=IfCondition(gui),
     )
     robot_state_publisher_node = Node(
@@ -70,6 +72,7 @@ def generate_launch_description():
         name="rviz2",
         output="log",
         arguments=["-d", rviz_config_file],
+        parameters=[sim_time],
         condition=IfCondition(gui),
     )
 

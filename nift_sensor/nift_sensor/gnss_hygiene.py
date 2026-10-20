@@ -45,9 +45,18 @@ Description:
     baseline      the front - rear distance within baseline_tol_m of the reference,
                   plus what the speed can move one antenna between the two stamps
                   (and one receiver epoch). The reference is antenna_baseline_m, or
-                  the median of the first baseline_learn_pairs pairs below
-                  stuck_speed_mps (nothing is accepted until then; moving, the two
-                  positions can be an epoch apart, which biases the length)
+                  the median of the last baseline_learn_pairs synchronous pairs
+                  whose stamps are so close that the speed moves an antenna at most
+                  LEARN_MOTION_M between them, once 3/4 of them agree with it within
+                  LEARN_AGREE_M (nothing is accepted until then). At rest that is
+                  every synchronous pair, and the first ones agree. Moving, it keeps
+                  the pairs of one receiver epoch and skips those an epoch apart,
+                  which would bias the length. Stamps cannot show a backlog after a
+                  gap (old positions under fresh stamps), so its pairs are the ones
+                  that disagree. So a beacon_node restarted while driving learns it
+                  too. A baseline learned while moving is learned again at the next
+                  stop, the same way, because one antenna that lags for the whole
+                  learning would bias every moving pair alike
     heading       the rear -> front heading within heading_tol_deg of the last
                   accepted pair's, plus the yaw the distance driven allows at the
                   minimum turning radius
@@ -83,6 +92,11 @@ from nift_common.vehicle import ShuttleConfig
 
 # one receiver epoch (10 Hz) + margin: the two antennas' latest positions can be an epoch apart
 EPOCH_S = 0.12
+# Baseline learning takes a pair only if the speed moves an antenna at most this between its two
+# stamps (localization_filter's start pairs use the same bound) ...
+LEARN_MOTION_M = 0.05
+# ... and adopts the median of the last baseline_learn_pairs once 3/4 of them lie within this of it
+LEARN_AGREE_M = 0.05
 
 # accepted / reanchored / learning: a new position that formed a pair; repeat: still fresh; the
 # rest: not used
@@ -169,7 +183,9 @@ class BeaconHygiene:
         self.accepted_rx = None
         self.baseline_m = (self.cfg.antenna_baseline_m if self.cfg.antenna_baseline_m > 0.0
                            else None)
-        self._learn = []
+        # learned from moving pairs: learned again at the next stop
+        self.baseline_moving = False
+        self._learn = []                # learning pairs: (length, moving)
         # last accepted pair: (mid stamp, mid lat, mid lon, heading [rad], speed)
         self._ref = None
         # a time jump not yet consumed by a pair: re-anchor that pair
@@ -263,12 +279,11 @@ class BeaconHygiene:
         v = max(abs(f.get('speed') or 0.0), abs(r.get('speed') or 0.0))
         sync = abs(f['t'] - r['t']) <= c.sync_s
         if self.baseline_m is None:
-            if not sync or v >= c.stuck_speed_mps:
+            if not self._learn_baseline(length, v, abs(f['t'] - r['t']), sync):
                 return 'learning'
-            self._learn.append(length)
-            if len(self._learn) < c.baseline_learn_pairs:
-                return 'learning'
-            self.baseline_m = sorted(self._learn)[len(self._learn) // 2]
+        elif self.baseline_moving and v < c.stuck_speed_mps:
+            # at rest: learn it again
+            self._learn_baseline(length, v, abs(f['t'] - r['t']), sync)
         if abs(length - self.baseline_m) > c.baseline_tol_m + v * (abs(f['t'] - r['t']) + EPOCH_S):
             return 'baseline'
         t_mid = 0.5 * (f['t'] + r['t'])
@@ -302,6 +317,31 @@ class BeaconHygiene:
             self._jump = False
             self._ref = (t_mid, lat_mid, lon_mid, heading, v)
         return verdict
+
+    def _learn_baseline(self, length, v, dt, sync) -> bool:
+        """
+        Learn the baseline from one pair's antenna distance; True once it is (re)learned.
+
+        Takes a synchronous pair whose stamps are dt apart if the speed v moves an antenna at most
+        LEARN_MOTION_M in dt. Adopts the median of the newest baseline_learn_pairs once 3/4 of
+        them lie within LEARN_AGREE_M of it.
+        """
+        c = self.cfg
+        if not sync or v * dt > LEARN_MOTION_M:
+            return False
+        self._learn.append((length, v >= c.stuck_speed_mps))
+        if len(self._learn) < c.baseline_learn_pairs:
+            return False
+        # the newest baseline_learn_pairs
+        del self._learn[:-c.baseline_learn_pairs]
+        lengths = sorted(x for x, _ in self._learn)
+        median = lengths[len(lengths) // 2]
+        if sum(abs(x - median) <= LEARN_AGREE_M for x in lengths) < 0.75 * len(lengths):
+            return False
+        self.baseline_m = median
+        self.baseline_moving = any(moving for _, moving in self._learn)
+        self._learn = []
+        return True
 
     def _count(self, verdict: str) -> str:
         self.counts[verdict] += 1

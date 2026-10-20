@@ -26,7 +26,7 @@ brake_full_count: 40            # 0x101 brake count from which the deceleration 
 
 # Sensor mounts, in base_link [m]
 gnss_front_x: 1.041             # front antenna ahead of base_link. Not measured yet (driving data suggest 1.2-1.6)
-gnss_rear_x: -1.041             # rear antenna (negative: behind)
+gnss_rear_x: -1.041             # rear antenna (negative: behind). Not measured yet
 gnss_z: 0.96
 lidar_x: 1.53
 lidar_y: 0.0

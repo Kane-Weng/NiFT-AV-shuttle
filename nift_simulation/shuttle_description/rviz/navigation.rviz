@@ -185,8 +185,6 @@ Visualization Manager:
           Value: true
         left_front_wheel:
           Value: true
-        lidar_link:
-          Value: true
         map:
           Value: true
         right_back_wheel:
@@ -220,8 +218,6 @@ Visualization Manager:
                 {}
               velodyne:
                 {}
-            lidar_link:
-              {}
       Update Interval: 0
       Value: false
     - Class: rviz_default_plugins/MarkerArray

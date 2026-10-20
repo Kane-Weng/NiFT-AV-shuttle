@@ -41,7 +41,7 @@ colcon build --symlink-install --packages-select nift_common
 colcon test --packages-select nift_common && colcon test-result --verbose
 ```
 
-The tests cover the YAML-to-dataclass mapping and the derived values (`test_vehicle.py`), the CAN encoding against the vendor's worked example plus round trips and malformed frames (`test_can_protocol.py`), the copies in other languages and the URDF (`test_consistency.py`), and flake8 and pep257. The consistency tests read the other packages' sources from the repository and skip when only the install is present.
+The tests cover the YAML-to-dataclass mapping and the derived values (`test_vehicle.py`), the CAN encoding against the vendor's worked example plus round trips and malformed frames (`test_can_protocol.py`), the copies in other languages and the URDF (`test_consistency.py`), and flake8 and pep257. The consistency tests read the other packages' sources from the repository and skip when only the install is present. A checked file that is missing from the repository fails its test.
 
 ## License
 
