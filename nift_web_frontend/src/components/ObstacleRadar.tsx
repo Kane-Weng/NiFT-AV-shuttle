@@ -8,6 +8,8 @@
  *   Subscribes to /obstacles (geometry_msgs/PolygonStamped) which the lidar
  *   node publishes in the base_link frame (vehicle-relative coordinates).
  *   Because the data is already relative, no coordinate transforms are needed.
+ *   lidar_node sends one polygon per obstacle, so useObstacles collects all
+ *   polygons of the latest LiDAR frame and the radar draws every one of them.
  *
  *   Canvas coordinate mapping (ROS base_link → screen pixels):
  *     canvas_x = VX − ros_y × SCALE   (ROS +y = left  → screen left)
@@ -24,14 +26,13 @@
  *     1. Background
  *     2. Corridor half-width guide rails
  *     3. Bounding circle (faint) + distance arcs (upper semicircle only)
- *     4. Obstacle polygon (red)
+ *     4. Obstacle polygons (red)
  *     5. Shuttle rectangle + forward arrow
  *     6. Direction labels + status badge
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useRosTopic } from '../hooks/useRosTopic'
-import type { PolygonStamped } from '../types/ros'
+import { useObstacles } from '../hooks/useObstacles'
 
 const CANVAS_W = 220
 const CANVAS_H = 140
@@ -64,10 +65,7 @@ function toCanvas(rosX: number, rosY: number): [number, number] {
 export default function ObstacleRadar() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [showInfo, setShowInfo] = useState(false)
-  const obstacles = useRosTopic<PolygonStamped>(
-    '/obstacles',
-    'geometry_msgs/PolygonStamped',
-  )
+  const obstacles = useObstacles()   // base_link, every obstacle of the latest LiDAR frame
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -115,16 +113,16 @@ export default function ObstacleRadar() {
       ctx.fillText(`${ring.m}m`, VX + r + 2, VY - 2)
     }
 
-    // ── Obstacle polygon ────────────────────────────────────────────────────
-    const pts = obstacles?.polygon.points ?? []
-    const hasObstacle = pts.length >= 3
+    // ── Obstacle polygons ───────────────────────────────────────────────────
+    const polygons = obstacles.obstacles.map(o => o.base)
+    const hasObstacle = polygons.length > 0
 
-    if (hasObstacle) {
+    for (const pts of polygons) {
       ctx.beginPath()
-      const [x0, y0] = toCanvas(pts[0].x, pts[0].y)
+      const [x0, y0] = toCanvas(pts[0][0], pts[0][1])
       ctx.moveTo(x0, y0)
       for (let i = 1; i < pts.length; i++) {
-        const [xi, yi] = toCanvas(pts[i].x, pts[i].y)
+        const [xi, yi] = toCanvas(pts[i][0], pts[i][1])
         ctx.lineTo(xi, yi)
       }
       ctx.closePath()
@@ -167,10 +165,13 @@ export default function ObstacleRadar() {
     ctx.fillText('R', CANVAS_W - 2, VY - 4)
 
     // ── Status badge ────────────────────────────────────────────────────────
-    // Compute edge clearance to match last_obs_dist (center_dist - VEHICLE_RADIUS)
+    // Compute edge clearance to match last_obs_dist (center_dist - VEHICLE_RADIUS),
+    // over the points of every obstacle
     let minCenterDist = Infinity
-    for (const pt of pts) {
-      minCenterDist = Math.min(minCenterDist, Math.sqrt(pt.x * pt.x + pt.y * pt.y))
+    for (const pts of polygons) {
+      for (const [x, y] of pts) {
+        minCenterDist = Math.min(minCenterDist, Math.sqrt(x * x + y * y))
+      }
     }
     const edgeDist = Math.max(0, minCenterDist - VEHICLE_RADIUS_M)
 

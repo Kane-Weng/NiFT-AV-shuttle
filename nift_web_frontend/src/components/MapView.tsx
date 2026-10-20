@@ -14,8 +14,11 @@
  *                                   (the HD map the planner routes on)
  *     3. Planned trajectory       — solid cyan line from /planned_path
  *                                   (the route the vehicle is following)
- *     4. Obstacle polygon         — red filled shape from /obstacles
- *                                   (the convex hull of detected LiDAR clusters)
+ *     4. Obstacle polygons        — red filled shapes from /obstacles
+ *                                   (the convex hulls of detected LiDAR clusters).
+ *                                   lidar_node publishes them in base_link, so
+ *                                   useObstacles moves them into map with the
+ *                                   map → base_link transform from /tf
  *     5. Goal marker              — green dot placed by the user's click
  *     6. Vehicle arrow            — SVG arrow from /gnss/fix (position) and
  *                                   /gnss/heading_deg (rotation); points in the
@@ -46,8 +49,9 @@ import {
 import L from 'leaflet'
 import { useRosTopic } from '../hooks/useRosTopic'
 import { useRosPublisher } from '../hooks/useRosPublisher'
+import { useObstacles } from '../hooks/useObstacles'
 import { mapToLatLon, latLonToMap, MAP_ORIGIN_LAT, MAP_ORIGIN_LON } from '../utils/coordinates'
-import type { NavSatFix, Path, PolygonStamped, MarkerArray, Float64Msg } from '../types/ros'
+import type { NavSatFix, Path, MarkerArray, Float64Msg } from '../types/ros'
 
 const MAP_CENTER: [number, number] = [MAP_ORIGIN_LAT, MAP_ORIGIN_LON]
 const LINE_STRIP = 4
@@ -94,7 +98,7 @@ export default function MapView({
   const gnssFix = useRosTopic<NavSatFix>('/gnss/fix', 'sensor_msgs/NavSatFix')
   const headingMsg = useRosTopic<Float64Msg>('/gnss/heading_deg', 'std_msgs/Float64')
   const plannedPath = useRosTopic<Path>('/planned_path', 'nav_msgs/Path')
-  const obstacles = useRosTopic<PolygonStamped>('/obstacles', 'geometry_msgs/PolygonStamped')
+  const obstacles = useObstacles(true)   // in map, moved with the map → base_link transform
   // Lanelet map markers update at 1 Hz — no throttle needed
   const laneletMarkers = useRosTopic<MarkerArray>(
     '/lanelet_map_markers',
@@ -132,9 +136,14 @@ export default function MapView({
     return lines
   }, [laneletMarkers])
 
-  const obstaclePositions = useMemo<[number, number][]>(() => {
-    if (!obstacles || obstacles.polygon.points.length < 3) return []
-    return obstacles.polygon.points.map(p => mapToLatLon(p.x, p.y))
+  // One polygon per obstacle of the latest LiDAR frame. Polygons without a pose
+  // (no map → base_link transform yet) can't be placed on the map.
+  const obstaclePolygons = useMemo<[number, number][][]>(() => {
+    const polygons: [number, number][][] = []
+    for (const o of obstacles.obstacles) {
+      if (o.map && o.map.length >= 3) polygons.push(o.map.map(([x, y]) => mapToLatLon(x, y)))
+    }
+    return polygons
   }, [obstacles])
 
   const vehiclePos: [number, number] | null = gnssFix
@@ -206,16 +215,17 @@ export default function MapView({
           />
         )}
 
-        {/* Latest obstacle footprint */}
-        {obstaclePositions.length >= 3 && (
+        {/* Obstacle footprints of the latest LiDAR frame */}
+        {obstaclePolygons.map((positions, i) => (
           <Polygon
-            positions={obstaclePositions}
+            key={i}
+            positions={positions}
             color="#f87171"
             fillColor="#f87171"
             fillOpacity={0.25}
             weight={2}
           />
-        )}
+        ))}
 
         {/* Goal marker */}
         {goalMarker && <Marker position={goalMarker} icon={goalIcon} />}

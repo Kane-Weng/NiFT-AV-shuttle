@@ -21,6 +21,8 @@
  *     BoolMsg          → std_msgs/Bool                 (e-stop / offroad flags)
  *     DiagnosticStatus → diagnostic_msgs/DiagnosticStatus (per-node health)
  *     DiagnosticArray  → diagnostic_msgs/DiagnosticArray  (all node health)
+ *     TFMessage        → tf2_msgs/TFMessage            (/tf, for map → base_link)
+ *     TriggerResponse  → std_srvs/Trigger response     (controller services)
  *
  * Usage:
  *   Import the specific type you need in any component or hook:
@@ -129,4 +131,22 @@ export interface DiagnosticStatus {
 export interface DiagnosticArray {
   header: Header
   status: DiagnosticStatus[]
+}
+
+export interface TransformStamped {
+  header: Header
+  child_frame_id: string
+  transform: {
+    translation: { x: number; y: number; z: number }
+    rotation: Quaternion
+  }
+}
+
+export interface TFMessage {
+  transforms: TransformStamped[]
+}
+
+export interface TriggerResponse {
+  success: boolean
+  message: string
 }

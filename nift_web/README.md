@@ -15,7 +15,7 @@ NiFT stack (every node) ◄──── topics, services ────► rosbrid
 
 The browser loads the React app from its own server (Vite, port 5173 by default). The app then opens `ws://localhost:9090`, or the URL in `VITE_ROS_URL`, and from there it subscribes, publishes and calls services like any other ROS node. rosbridge doesn't filter or change the data. It only translates between ROS messages and JSON.
 
-The dashboard reads `/gnss/fix`, `/gnss/heading_deg`, `/gnss/vel`, `/planned_path`, `/lanelet_map_markers`, `/obstacles`, `/nav_telemetry` and `/diagnostics`. It sends `/goal_pose`, `/teleop_cmd_vel` and the controller's services `/start_navigation`, `/toggle_manual_mode`, `/trigger_estop` and `/resume`.
+The dashboard reads `/gnss/fix`, `/gnss/heading_deg`, `/gnss/vel`, `/planned_path`, `/lanelet_map_markers`, `/obstacles`, `/tf`, `/nav_telemetry` and `/diagnostics`. It sends `/goal_pose`, `/teleop_cmd_vel` and the controller's services `/start_navigation`, `/toggle_manual_mode`, `/safe_stop`, `/trigger_estop` and `/resume`, and it shows each service's reply.
 
 ---
 
