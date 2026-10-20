@@ -39,6 +39,22 @@ The Python files are imported from this repo as they are. Anything a browser can
 
 The map is drawn from the Lanelet2 file in JavaScript first. Pyodide loads only when the sim starts.
 
+## The 3D world
+
+The **World** button on the map shows the test site in 3D under our lanes: roads, curbs, markings, buildings, signs, poles, traffic lights and trees. It's off by default. The first click loads about 2 MB (with progress on the button), later clicks only show or hide it. It works in the top-down and the 3D view and in both themes. In the top-down view the lanes, the path and the shuttle are drawn over roofs and trees, like RViz overlays. In 3D they're depth tested against the world.
+
+The site rises about 13 m from one end to the other, but the stack works on a flat map. So the page lifts what it draws onto the ground with a height grid (1 m cells) while the world is shown: the lanes, the path, the goal, obstacles, the trail and the shuttle, which also tilts with the slope. This is display only. The nodes, the sim and every message stay 2D, and clicks on the map still give map x and y.
+
+The files are in `web/public/world/` (a Draco-compressed `world.glb` of 1.8 MB, `height.bin.gz`, `trees.json`, `world.json` and `NOTICE`). The Draco decoder comes from the pinned `three` package and is served next to them. `tools/world3d/build_world.sh` rebuilds them from the public twin with Blender and glTF-Transform. Its header lists the inputs, steps and versions, and `world.json` records the source commit and what was left out. What goes in:
+
+- The twin's static world from its USD copy, in flat colours, with no textures at all. Repeated props are GPU instances, so the 1 M triangles take about 250 draw calls.
+- Our own low-poly trees at the positions and species of the twin's 2,009 plants. The twin's plant models are left out because their source isn't credited. Its scale factors also made some species 30 to 45 m tall, so each species is set to a plausible height.
+- The twin's frame is the `.xodr` transverse Mercator. One fixed similarity transform (−1.8174°, scale 1.000209) moves it into our map frame. 88.7 % of the 34,784 lanelet nodes fall on the twin's road surface, and the rest lie within 0.5 m (median) of its edge.
+
+Left out on purpose, because they carry logos or brands or their licence isn't clear: the street light banners, the Block M disc on the roundabout island, the wrapped electrical boxes, a mailbox, the painted rock, the shuttle stop sign, the tunnel signage, the plant cards on the GPS blocker, all foliage and every texture. Brand names are stripped from every name in the files, and `test/world.test.ts` fails if one comes back.
+
+Frame rate with the world on, measured in headless Chrome with a 1400 × 860 window on a laptop's integrated Radeon 610M: 60 fps with vsync in both views. Without the frame cap it draws about 320 fps (about 170 at a pixel ratio of 2), against about 900 without the world. The world adds about 27 MB of JavaScript heap.
+
 ## Run it locally
 
 You need Python 3.10 or newer with `numpy`, `pyyaml` and `pytest`, and Node 22.18 or newer. Don't source ROS in the shell you use here. The stand-ins must win on `sys.path`.
@@ -53,7 +69,7 @@ npm run dev        # builds the Python bundle, then serves http://localhost:5173
 
 `npm run dev` and `npm run build` first run `npm run bundle`, which zips the repo's Python files into `web/public/py/` with `tools/build_bundle.py`. The dev server serves the map from the repo's `maps/` folder, so it isn't copied. `npm run build` writes a static site to `web/dist/`, and `npm run preview` serves it. Set `PLAYGROUND_BASE` (for example `/NiFT-AV-shuttle/`) when the site is served from a sub-path.
 
-The page runs the real stack in Pyodide by default. `?sim=mock` swaps in a mock worker that starts at once and has no Python, which is handy while working on the page. Other URL options are `?theme=dark|light`, `?cam=ortho|persp` and `#scenario=<code>`.
+The page runs the real stack in Pyodide by default. `?sim=mock` swaps in a mock worker that starts at once and has no Python, which is handy while working on the page. Other URL options are `?theme=dark|light`, `?cam=ortho|persp`, `?world=1` (3D world on at start) and `#scenario=<code>`.
 
 Pyodide loads from the jsDelivr CDN, so the page needs network on the first visit. Set `VITE_PYODIDE_URL` at build time to host it yourself.
 
@@ -83,7 +99,7 @@ A run takes a few seconds. The exit code is 0 when the shuttle arrived. `--out` 
 | Perf and memory | `node perf.mjs` (same folder) | first-load size, boot time, speed, heap |
 | Worker in a browser | `node browser_smoke.mjs` (same folder, after `npm ci` in `web/`) | the worker alone in headless Chrome, boots Pyodide from the CDN, drives route 04. Needs network |
 | Page | `cd nift_playground/web && npx tsc --noEmit && npm test` | type check and unit tests |
-| Page smoke | `npm run build && npm run smoke` (in `web/`) | headless Chrome clicks through every panel against the mock worker |
+| Page smoke | `npm run build && npm run smoke` (in `web/`) | headless Chrome clicks through every panel against the mock worker, then turns on the 3D world and takes top-down and 3D screenshots of it |
 | Page end to end | `npm run e2e` (in `web/`) | builds the page and drives the real stack in headless Chrome through its own buttons. Boot, route 04 to arrival, a GNSS dropout to SAFE_STOP and Resume, E-STOP, pause and step, presets, reset. Needs network |
 | Lanelet2 against the real one | `python3 nift_playground/tests/lanelet2/compare_real.py` | needs Docker and the `nift_pub_deps:humble` image. Refreshes the fixtures the native suite uses |
 
@@ -102,13 +118,15 @@ nift_playground/
     stubs/               dotenv, aiohttp, pyproj import stand-ins
     playground/          launch set, sim backend, Octane bridge, runner, session, operator, observer, CLI
   web/                   Vite + TypeScript + React + three.js page
-    src/scene/           map view
+    src/scene/           map view, the 3D world (world.ts, loaded on demand) and its height grid
+    public/world/        the 3D world's files and their NOTICE (built by tools/world3d)
     src/panels/          operator panel, telemetry, playground controls, log
     src/worker/          the Pyodide worker (core.ts runs in the browser and in Node tests)
     src/mock/            a mock worker for page work without Python
   tools/
     build_bundle.py      zips the repo's Python files the nodes need (bundle_manifest.txt)
     gen_msgs/            message generator from the Humble .msg and .srv files
+    world3d/             builds web/public/world/ from the public twin (Blender, glTF-Transform)
   tests/                 pytest suites, pyodide/ (Node harness), lanelet2/, reference/ (real ROS runs),
                          validation/ (playground against them), investigations/
 ```
@@ -131,13 +149,14 @@ nift_playground/
 - **No DDS jitter.** Messages follow ROS's tick order, but always the same way, and nothing is dropped. On ROS a frame sometimes lands a tick earlier or later, so repeated runs spread by a few centimetres. Runs here are deterministic.
 - **One parameter differs.** `waypoint_node`'s `map_publish_period_s` is raised to 3600 s, because rebuilding the map markers every second cost most of the run time and nothing in the page reads them.
 - **Parameters apply on reset.** The nodes read their parameters at start-up, so a changed parameter takes effect on the next reset.
-- **Cost.** The first visit downloads about 9 MB. That is Pyodide, numpy and pyyaml from the CDN, our 0.7 MB bundle and the map. Booting takes a few seconds. The full stack runs about 12 times faster than real time in Pyodide at the `max` speed, so the higher speed settings are capped by what the machine can do. A tab uses a few hundred MB of memory, mostly the fixed cost of Pyodide, and it stays flat over many resets.
+- **Cost.** The first visit downloads about 9 MB. That is Pyodide, numpy and pyyaml from the CDN, our 0.7 MB bundle and the map. The 3D world adds about 2 MB when it's turned on. Booting takes a few seconds. The full stack runs about 12 times faster than real time in Pyodide at the `max` speed, so the higher speed settings are capped by what the machine can do. A tab uses a few hundred MB of memory, mostly the fixed cost of Pyodide, and it stays flat over many resets.
 
 ## Licences
 
 The code in this folder is Apache-2.0, as the rest of the repo.
 
-- **Map.** `maps/lanelet2_odr2024.osm` is derived from the OpenDRIVE file of the digital twin at [mcity/mcity-digital-twin](https://github.com/mcity/mcity-digital-twin), which is MIT licensed. The page ships that notice with the map, as `maps/README.md` does. The shuttle is drawn as a box with its real dimensions. No meshes, aerial imagery or logos are used.
+- **Map.** `maps/lanelet2_odr2024.osm` is derived from the OpenDRIVE file of the digital twin at [mcity/mcity-digital-twin](https://github.com/mcity/mcity-digital-twin), which is MIT licensed. The page ships that notice with the map, as `maps/README.md` does. The shuttle is drawn as a box with its real dimensions.
+- **3D world.** `web/public/world/` is derived from the same twin's USD copy (tag 1.9.1), MIT licensed, © 2024 Quantum Signal AI LLC and The Regents of the University of Michigan. Its notice and the list of changes are in `web/public/world/NOTICE`, which is served with the files. No textures, logos, aerial imagery or plant models of the twin are included, and the trees are our own shapes. This project isn't affiliated with or endorsed by the owners of the twin or of the test facility.
 - **Lanelet2 example map.** `tests/lanelet2/maps/mapping_example.osm` is Lanelet2's example map, BSD 3-Clause, with its licence beside it. It is test data only and not part of the page.
 - **Lanelet2 stand-in.** Parts of it translate algorithms of Lanelet2 (BSD-3-Clause), Boost (BSL-1.0) and GeographicLib (MIT) into Python and keep those licences. [py/fakelanelet2/NOTICE](py/fakelanelet2/NOTICE) lists the sources per file, and the licence texts are in `py/fakelanelet2/LICENSES/`. The C++ container ordering is a clean-room implementation (`_stdorder.py`, written from `CLEANROOM_SPEC.md`).
 - **Pyodide** (MPL-2.0) and its packages load from the CDN and aren't vendored here.

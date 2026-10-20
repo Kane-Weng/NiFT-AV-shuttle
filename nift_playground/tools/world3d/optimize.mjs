@@ -23,8 +23,8 @@ const opt = (name, def) => {
   return i > 0 ? Number(process.argv[i + 1]) : def
 }
 // Draco quantization bits (defaults are what build_world.sh ships). Positions are quantized over each joined mesh's box (up to ~500 m).
-const QPOS = opt('qpos', 16)
-const QNORM = opt('qnorm', 10)
+const QPOS = opt('qpos', 14)
+const QNORM = opt('qnorm', 8)
 // meshoptimizer simplification error, relative to each joined mesh's size (0 skips it)
 const SIMPLIFY = opt('simplify', 0.0001)
 if (!input || !output) {

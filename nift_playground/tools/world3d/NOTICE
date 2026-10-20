@@ -1,0 +1,18 @@
+3D world of the NiFT web playground
+
+world.glb, height.bin.gz and trees.json are derived from the digital twin published at https://github.com/mcity/mcity-digital-twin (tag 1.9.1, the USD copy in Omniverse/), which is MIT licensed. Its notice is reproduced below as that license requires. The files were made with nift_playground/tools/world3d/build_world.sh.
+
+What was changed: the static world (ground, roads, curbs, markings, buildings, props, signs, poles, traffic and street lights) was converted to glTF, moved into the NiFT map frame, given one flat colour per surface and compressed. No textures are included. Left out on purpose: every surface that carries a logo or a brand (street light banners, the roundabout disc, wrapped electrical boxes, a mailbox, a painted rock, a shuttle stop sign, tunnel signage), the plant cards of the GPS blocker, and all foliage. The trees the page draws are our own simple shapes, placed at the positions and species of the twin's plants (trees.json). Brand names were removed from all names in the files.
+
+This project is not affiliated with or endorsed by the owners of the twin or of the test facility it models.
+
+MIT License
+
+Copyright (c) 2024 Quantum Signal AI LLC
+Copyright (c) 2024 The Regents of the University of Michigan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

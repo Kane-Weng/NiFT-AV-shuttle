@@ -1,0 +1,132 @@
+{
+ "format": 1,
+ "frame": "map (x east, y north, z up, metres); heights relative to z0",
+ "model": "world.glb",
+ "model_up": "glTF y up: rotate +90 deg about x for the map frame",
+ "height": {
+  "file": "height.bin.gz",
+  "x0": -127.0,
+  "y0": -218.0,
+  "cell": 1.0,
+  "nx": 365,
+  "ny": 536,
+  "scale": 0.01,
+  "z0_elevation_m": 272.18,
+  "encoding": "gzip of int16 little endian, row-major from (x0, y0), +x along a row; each value is the height in cm minus the previous value in its row (the first against 0)"
+ },
+ "trees": "trees.json",
+ "notice": "NOTICE",
+ "bytes": {
+  "world.glb": 1762360,
+  "height.bin.gz": 71387,
+  "trees.json": 69045,
+  "NOTICE": 2299
+ },
+ "stats": {
+  "input": {
+   "nodes": 3974,
+   "meshes": 1473,
+   "primitives": 1473,
+   "materials": 182
+  },
+  "output": {
+   "nodes": 249,
+   "meshes": 249,
+   "primitives": 249,
+   "materials": 182
+  },
+  "drawCalls": 249,
+  "instances": 1418,
+  "triangles": 1008652,
+  "bytes": 1762360,
+  "extensionsUsed": [
+   "EXT_mesh_gpu_instancing",
+   "KHR_draco_mesh_compression"
+  ]
+ },
+ "alignment": {
+  "fit_residual_mm": 0.707,
+  "scale": 1.0002085856754315,
+  "rotation_deg": -1.8174287465510737,
+  "translation_m": [
+   -47.74628315150278,
+   11.898799176263594
+  ],
+  "lanelet_nodes": 34784,
+  "nodes_on_road_surface_pct": 88.68,
+  "off_road_nodes_distance_to_road_m": {
+   "median": 0.5,
+   "p90": 1.5,
+   "max_searched_6m": 2.75
+  },
+  "z0_elevation_m": 272.18,
+  "road_height_rel_z0_m": [
+   -6.24,
+   7.29
+  ]
+ },
+ "excluded": [
+  {
+   "what": "electrical boxes wrapped in U-M, Mcity and sponsor logos",
+   "meshes": 18,
+   "triangles": 3492
+  },
+  {
+   "what": "mailbox painted with the U-M Block M",
+   "meshes": 5,
+   "triangles": 1730
+  },
+  {
+   "what": "shuttle stop sign with the Mcity logo",
+   "meshes": 2,
+   "triangles": 220
+  },
+  {
+   "what": "street light banners \"Welcome to Mcity, University of Michigan\"",
+   "meshes": 3,
+   "triangles": 180
+  },
+  {
+   "what": "plant cards on the GPS blocker (foliage of unclear source)",
+   "meshes": 1,
+   "triangles": 1688
+  },
+  {
+   "what": "U-M Block M disc on the roundabout island",
+   "meshes": 1,
+   "triangles": 96
+  },
+  {
+   "what": "planet M and MDOT logos on the tunnel",
+   "meshes": 1,
+   "triangles": 404
+  },
+  {
+   "what": "painted rock with the Mcity logo",
+   "meshes": 1,
+   "triangles": 1764
+  },
+  {
+   "what": "all 2009 plants of the twin (source not credited); drawn as our own low-poly trees from trees.json"
+  },
+  {
+   "what": "every texture (flat colours only): no logos, text or photos ship"
+  }
+ ],
+ "warnings": [],
+ "source": {
+  "repo": "https://github.com/mcity/mcity-digital-twin.git",
+  "ref": "1.9.1",
+  "commit": "29cf5349c65770bb02b267b9811040da57c9f45c",
+  "omniverse_tree": "9640054eca8e4506be46ada1f570611063f00198",
+  "usd": "Omniverse/Collected_McityMap_NSR_v4_1_6/McityMap_Main.usdc",
+  "usd_sha256": "49ddeaf1841bf45ec3ab17be5712d111d61adf9204e6c5759627efbdc4221de9"
+ },
+ "built_with": {
+  "blender": "5.2.2",
+  "@gltf-transform/functions": "4.5.1",
+  "draco3dgltf": "1.5.7",
+  "meshoptimizer": "1.3.0",
+  "map": "maps/lanelet2_odr2024.osm"
+ }
+}

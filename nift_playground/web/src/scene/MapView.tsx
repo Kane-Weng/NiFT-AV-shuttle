@@ -9,6 +9,10 @@
  *   drag that gives the heading; Obstacle (O) places one per click. With no tool, a press on an
  *   obstacle selects it and a drag moves it (one obstacle_move on release), Delete removes it,
  *   Escape drops the tool. Anything else pans and rotates the view.
+ *
+ *   World shows the 3D world under the map (scene/world.ts). It is off by default; the first time
+ *   it is turned on, the module and its files (about 2 MB) load, with progress on the button.
+ *   ?world=1 turns it on at start.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -64,6 +68,8 @@ export default function MapView({ map, theme }: Props) {
   const [cam, setCam] = useState<CameraMode>(() => (new URLSearchParams(location.search).get('cam') === 'persp' ? 'persp' : 'ortho'))
   const [centerlines, setCenterlines] = useState(false)
   const [follow, setFollow] = useState(false)
+  const [world, setWorld] = useState(() => new URLSearchParams(location.search).get('world') === '1')
+  const [worldLoad, setWorldLoad] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; pct: number; error?: string }>({ state: 'idle', pct: 0 })
 
   useEffect(() => {
     const h = historyOf(client)
@@ -196,6 +202,45 @@ export default function MapView({ map, theme }: Props) {
   useEffect(() => sceneRef.current?.setCenterlinesVisible(centerlines), [centerlines])
   useEffect(() => sceneRef.current?.setFollow(follow), [follow])
 
+  // The world loads once, on first use; later toggles only show or hide it
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene) return
+    if (!world) {
+      scene.setWorldVisible(false)
+      return
+    }
+    if (worldLoad.state === 'ready') {
+      scene.setWorldVisible(true)
+      return
+    }
+    if (worldLoad.state === 'loading') return
+    setWorldLoad({ state: 'loading', pct: 0 })
+    const t0 = performance.now()
+    import('./world')
+      .then(({ loadWorld }) => loadWorld((f) => setWorldLoad({ state: 'loading', pct: Math.round(100 * f) })))
+      .then((w) => {
+        if (sceneRef.current !== scene) return w.dispose()
+        scene.setWorld(w)
+        scene.setWorldVisible(getWorldWanted())
+        setWorldLoad({ state: 'ready', pct: 100 })
+        window.__playground = {
+          ...(window.__playground ?? {}),
+          worldReady: true,
+          worldInfo: { ...w.manifest.stats, loadMs: Math.round(performance.now() - t0), bytes: w.bytes },
+        }
+      })
+      .catch((e: unknown) => {
+        console.warn('world failed to load', e)
+        setWorldLoad({ state: 'error', pct: 0, error: String(e) })
+        setWorld(false)
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [world, client])
+  const worldWanted = useRef(world)
+  worldWanted.current = world
+  const getWorldWanted = () => worldWanted.current
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target
@@ -247,7 +292,25 @@ export default function MapView({ map, theme }: Props) {
           <ToolButton active={centerlines} onClick={() => setCenterlines(!centerlines)} title="Lanelet centrelines">
             Centerlines
           </ToolButton>
+          <ToolButton
+            testid="toggle-world"
+            active={world}
+            onClick={() => setWorld(!world)}
+            title="The 3D world from the public digital twin (MIT), with our lanes on its ground. About 2 MB, loaded on first use"
+          >
+            {worldLoad.state === 'loading' ? `World ${worldLoad.pct}%` : 'World'}
+          </ToolButton>
         </div>
+        {worldLoad.state === 'loading' && (
+          <div data-testid="world-loading" className="absolute top-11 left-2 px-2 py-1 text-xs rounded bg-white/90 dark:bg-gray-900/90 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200">
+            Loading the 3D world… {worldLoad.pct}%
+          </div>
+        )}
+        {worldLoad.state === 'error' && (
+          <div data-testid="world-error" className="absolute top-11 left-2 px-2 py-1 text-xs rounded bg-red-50 dark:bg-red-950 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300">
+            The 3D world did not load: {worldLoad.error}
+          </div>
+        )}
         {!map && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400">Loading map…</div>
         )}

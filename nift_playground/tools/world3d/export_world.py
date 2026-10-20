@@ -11,7 +11,7 @@ Description:
 
   blender -b --python export_world.py -- <McityMap_Main.usdc> <osm> <out_dir>
 
-  Outputs in <out_dir>: world_raw.glb, height.json + height.i16 (raw grid), trees.json,
+  Outputs in <out_dir>: world_raw.glb, height.bin.gz with height.json, trees.json and
   export_report.json. Nothing here reads anything outside the USD folder and the .osm file.
 
   Frames. The USD stage is the .xodr transverse Mercator frame (x east, y north, centimetres,
@@ -22,18 +22,19 @@ Description:
 """
 
 import bpy
+import gzip
 import json
 import math
 import os
 import re
 import sys
 import time
+import warnings
 from collections import Counter, defaultdict
 
 import numpy as np
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
-from mathutils.kdtree import KDTree
 from pxr import Sdf, Usd, UsdGeom, UsdShade
 
 argv = sys.argv[sys.argv.index('--') + 1:]
@@ -67,7 +68,6 @@ DROP_MATERIALS = [
     (r'^MI_StreetLight_s002_Banner', 'street light banners "Welcome to Mcity, University of Michigan"'),
     (r'^MI_McityTunnel_Signage', 'planet M and MDOT logos on the tunnel'),
     (r'^MI_McityGPSBlocker_Hops', 'plant cards on the GPS blocker (foliage of unclear source)'),
-    (r'^M_Sky', 'sky dome'),
 ]
 # Textures that must never decide a colour either (Unreal Starter Content masks).
 STARTER_CONTENT = re.compile(r'T_MacroVariation|T_Perlin_Noise_M|StarterContent', re.I)
@@ -395,7 +395,6 @@ def palette_material(c, alpha, emissive):
     if key in palette:
         return palette[key]
     m = bpy.data.materials.new(f'flat_{len(palette):03d}')
-    m.use_nodes = True
     nt = m.node_tree
     bsdf = next(n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED')
     bsdf.inputs['Base Color'].default_value = (*c, 1.0)
@@ -513,29 +512,31 @@ holes = int(np.isnan(H).sum())
 while np.isnan(H).any():
     P = np.pad(H, 1, constant_values=np.nan)
     nb = np.stack([P[1 + dy:ny + 1 + dy, 1 + dx:nx + 1 + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dx or dy])
-    with np.errstate(all='ignore'):
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore')
         fill = np.nanmean(nb, axis=0)
     m = np.isnan(H) & ~np.isnan(fill)
     if not m.any():
         H[np.isnan(H)] = 0.0
         break
     H[m] = fill[m]
-Hcm = np.clip(np.round(H * 100), -32768, 32767).astype('<i2')
-Hcm.tofile(os.path.join(OUT, 'height.i16'))
-height_meta = {'x0': float(gx0), 'y0': float(gy0), 'cell': CELL, 'nx': nx, 'ny': ny, 'scale': 0.01,
-               'encoding': 'int16le, row-major from (x0, y0), +x along a row', 'z0_elevation_m': Z0}
+
+# Centimetres, stored as the difference to the previous cell in the row (first cell of a row
+# against 0), which gzips to about half
+Hcm = np.clip(np.round(H * 100), -32768, 32767).astype(np.int32)
+D = np.diff(Hcm, axis=1, prepend=0).astype('<i2')
+with open(os.path.join(OUT, 'height.bin.gz'), 'wb') as f:
+    f.write(gzip.compress(D.tobytes(), compresslevel=9, mtime=0))
+height_meta = {'file': 'height.bin.gz', 'x0': float(gx0), 'y0': float(gy0), 'cell': CELL, 'nx': nx, 'ny': ny,
+               'scale': 0.01, 'z0_elevation_m': Z0,
+               'encoding': 'gzip of int16 little endian, row-major from (x0, y0), +x along a row; each value is '
+                           'the height in cm minus the previous value in its row (the first against 0)'}
 json.dump(height_meta, open(os.path.join(OUT, 'height.json'), 'w'), indent=1)
 log(f'height grid {nx} x {ny}, {holes} cells off the terrain filled, range {np.nanmin(H):.2f} .. {np.nanmax(H):.2f} m')
 
 # Alignment check: lanelet nodes over the road surface, and how far the others are from it
-mask_pts = []
-road_v = np.array([v[:] for v in rv])
-rmin, rmax = road_v.min(0), road_v.max(0)
 step = 0.25
 off_d = []
-kd = None
-ys = np.arange(rmin[1], rmax[1], step)
-xs = np.arange(rmin[0], rmax[0], step)
 off_nodes = []
 for mx, my in NODES:
     tx, ty = map_to_twin(mx, my)

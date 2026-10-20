@@ -6,6 +6,10 @@
  *   plugin below serves the repo's maps/ file at <base>maps/<file> in dev and preview, and emits
  *   it into dist/maps/ on build, so git holds the map once.
  *
+ *   The 3D world's files are in public/world/ (built by tools/world3d). Its Draco decoder comes
+ *   from the three package: the second plugin serves it at <base>world/draco/ and emits it into
+ *   dist/world/draco/, so it is the decoder of the pinned three version and never a copy in git.
+ *
  *   PLAYGROUND_BASE sets the base path (for example /NiFT-AV-shuttle/ on GitHub Pages).
  */
 
@@ -18,6 +22,8 @@ import path from 'node:path'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const MAPS_DIR = path.resolve(here, '../../maps')
 const MAPS = ['lanelet2_odr2024.osm']
+const DRACO_DIR = path.resolve(here, 'node_modules/three/examples/jsm/libs/draco/gltf')
+const DRACO = { 'draco_wasm_wrapper.js': 'text/javascript', 'draco_decoder.wasm': 'application/wasm' } as Record<string, string>
 
 function repoMaps(): Plugin {
   const serve = (base: string) => (req: { url?: string }, res: import('node:http').ServerResponse, next: () => void) => {
@@ -49,9 +55,39 @@ function repoMaps(): Plugin {
   }
 }
 
+function dracoDecoder(): Plugin {
+  const serve = (base: string) => (req: { url?: string }, res: import('node:http').ServerResponse, next: () => void) => {
+    const url = (req.url ?? '').split('?')[0]
+    const name = Object.keys(DRACO).find((f) => url === `${base}world/draco/${f}`)
+    if (!name) return next()
+    const file = path.join(DRACO_DIR, name)
+    res.setHeader('Content-Type', DRACO[name])
+    res.setHeader('Content-Length', statSync(file).size)
+    createReadStream(file).pipe(res)
+  }
+  let base = '/'
+  return {
+    name: 'nift-draco-decoder',
+    configResolved(c) {
+      base = c.base.startsWith('.') ? '/' : c.base
+    },
+    configureServer(server) {
+      server.middlewares.use(serve(base))
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(serve(base))
+    },
+    generateBundle() {
+      for (const f of Object.keys(DRACO)) {
+        this.emitFile({ type: 'asset', fileName: `world/draco/${f}`, source: readFileSync(path.join(DRACO_DIR, f)) })
+      }
+    },
+  }
+}
+
 export default defineConfig({
   base: process.env.PLAYGROUND_BASE ?? './',
-  plugins: [react(), repoMaps()],
+  plugins: [react(), repoMaps(), dracoDecoder()],
   worker: { format: 'es' },
   build: { target: 'es2022', chunkSizeWarningLimit: 1500 },
   server: { fs: { allow: [here, MAPS_DIR] } },

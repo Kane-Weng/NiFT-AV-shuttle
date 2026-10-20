@@ -13,6 +13,12 @@
  *   their heading, moving an obstacle).
  *
  *   The scene has no React in it. The page creates one MapScene per canvas and feeds it data.
+ *
+ *   The 3D world (world.ts) is optional. When it is shown, everything the page draws is lifted
+ *   onto its ground with the height grid, display only (the stack stays 2D). It renders first;
+ *   in the top-down view the depth buffer is then cleared, so lanes, path, goal and the shuttle
+ *   stay visible under trees and roofs, as RViz overlays would. In 3D they are depth tested
+ *   against the world.
  */
 
 import * as THREE from 'three'
@@ -26,6 +32,7 @@ import type { LaneletMap, XY, BorderKind } from '../map/lanelets'
 import type { Pose2D } from '../protocol'
 import { VEHICLE } from '../geo/site'
 import { THEMES, type SceneTheme, type ThemeName } from './theme'
+import type { LoadedWorld } from './world'
 
 export type CameraMode = 'ortho' | 'persp'
 
@@ -55,11 +62,39 @@ const Z_PATH = 0.05
 const Z_GOAL = 0.06
 
 const TRAIL_MAX = 4000
+// Lift above the world's ground: clears the road mesh, its compression error and the curbs
+const DRAPE = 0.15
+// Longest straight piece of a draped line [m] (the height grid has 1 m cells)
+const DRAPE_STEP = 1.0
 
-function segmentsOf(lines: XY[][], z: number): number[] {
+type HeightFn = ((x: number, y: number) => number) | null
+
+// On the world the lanes lie on dark asphalt in both themes, so they keep the dark theme's colours
+const ASPHALT_KEYS = new Set<keyof SceneTheme>(['edge', 'divider', 'center', 'virtual', 'centerline'])
+
+/** Splits a polyline so no piece is longer than `step`, for following the ground. */
+function densify(p: XY[], step: number): XY[] {
+  const out: XY[] = [p[0]]
+  for (let i = 1; i < p.length; i++) {
+    const [ax, ay] = p[i - 1]
+    const [bx, by] = p[i]
+    const n = Math.ceil(Math.hypot(bx - ax, by - ay) / step)
+    for (let k = 1; k <= n; k++) out.push([ax + ((bx - ax) * k) / n, ay + ((by - ay) * k) / n])
+  }
+  return out
+}
+
+function segmentsOf(lines: XY[][], z: number, h: HeightFn = null): number[] {
   const out: number[] = []
-  for (const p of lines) {
-    for (let i = 1; i < p.length; i++) out.push(p[i - 1][0], p[i - 1][1], z, p[i][0], p[i][1], z)
+  for (const line of lines) {
+    if (line.length < 2) continue
+    const p = h ? densify(line, DRAPE_STEP) : line
+    let pz = h ? h(p[0][0], p[0][1]) + z : z
+    for (let i = 1; i < p.length; i++) {
+      const qz = h ? h(p[i][0], p[i][1]) + z : z
+      out.push(p[i - 1][0], p[i - 1][1], pz, p[i][0], p[i][1], qz)
+      pz = qz
+    }
   }
   return out
 }
@@ -100,6 +135,7 @@ export class MapScene {
   private raf = 0
   private resizeObs: ResizeObserver
   private lineMats: { mat: LineMaterial; key: keyof SceneTheme }[] = []
+  private laneMats = new Set<LineMaterial>()
   private meshMats: { mat: { color: THREE.Color }; key: keyof SceneTheme }[] = []
 
   private gridGroup = new THREE.Group()
@@ -126,6 +162,21 @@ export class MapScene {
   private poseEst: THREE.LineLoop
   private obstacleMats: THREE.Material[] = []
   private perceivedMat: LineMaterial | null = null
+  // The optional 3D world and what is drawn on it, kept so a toggle can redraw it draped
+  private worldScene = new THREE.Scene()
+  private world: LoadedWorld | null = null
+  private worldOn = false
+  private worldLights: { hemi: THREE.HemisphereLight; sun: THREE.DirectionalLight }
+  private map: LaneletMap | null = null
+  private last: {
+    path: XY[]
+    goal: XY | null
+    obstacles: { polys: XY[][]; selected: number }
+    perceived: XY[][] | null
+    pose: Pose2D | null
+    poseEst: Pose2D | null
+  } = { path: [], goal: null, obstacles: { polys: [], selected: -1 }, perceived: null, pose: null, poseEst: null }
+  private frames = 0
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -133,11 +184,14 @@ export class MapScene {
   ) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    // The loop clears and renders the world and the overlays itself (see loop())
+    this.renderer.autoClear = false
+    this.renderer.info.autoReset = false
 
     this.ortho = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 5000)
     this.ortho.up.set(0, 0, 1)
     this.ortho.position.set(0, 0, 500)
-    this.persp = new THREE.PerspectiveCamera(50, 1, 0.1, 10000)
+    this.persp = new THREE.PerspectiveCamera(50, 1, 0.5, 10000)
     this.persp.up.set(0, 0, 1)
 
     this.controls = new MapControls(this.ortho, canvas)
@@ -201,6 +255,13 @@ export class MapScene {
     this.trailLine.frustumCulled = false
     this.scene.add(this.trailLine)
 
+    const hemi = new THREE.HemisphereLight(0xdfe8f5, 0x5a5040, 1.6)
+    hemi.position.set(0, 0, 1)
+    const sun = new THREE.DirectionalLight(0xffffff, 1.5)
+    sun.position.set(-120, -200, 300)
+    this.worldLights = { hemi, sun }
+    this.worldScene.add(hemi, sun)
+
     this.buildGoal()
     this.buildShuttle()
     this.mapAxes = makeAxes(4, 0.12)
@@ -224,8 +285,10 @@ export class MapScene {
   setTheme(name: ThemeName) {
     this.themeName = name
     this.theme = THEMES[name]
-    this.scene.background = new THREE.Color(this.theme.background)
-    for (const { mat, key } of this.lineMats) mat.color.setHex(this.theme[key])
+    // The world is a little dimmer on the dark background, so the RViz colours stay readable
+    this.worldLights.hemi.intensity = name === 'dark' ? 1.25 : 1.6
+    this.worldLights.sun.intensity = name === 'dark' ? 1.1 : 1.5
+    for (const { mat, key } of this.lineMats) mat.color.setHex(this.colourOf(key))
     for (const { mat, key } of this.meshMats) mat.color.setHex(this.theme[key])
     this.arrowMat.color.setHex(this.theme[this.arrowKind])
   }
@@ -236,8 +299,24 @@ export class MapScene {
 
   /** Draws the lanelet map and fits the view to it. */
   setMap(map: LaneletMap) {
+    this.map = map
+    this.drawLanes()
+    this.bounds = map.bounds
+    this.buildGrid()
+    this.fit()
+  }
+
+  private drawLanes() {
+    const map = this.map
+    if (!map) return
+    for (const g of [this.laneGroup, this.centerGroup])
+      for (const c of g.children) (c as LineSegments2).geometry.dispose()
+    this.lineMats = this.lineMats.filter((e) => !this.laneMats.has(e.mat))
+    for (const m of this.laneMats) m.dispose()
+    this.laneMats.clear()
     this.laneGroup.clear()
     this.centerGroup.clear()
+    const h = this.heightFn()
     const byKind = new Map<string, XY[][]>()
     for (const b of map.borders) {
       const k = `${b.kind}:${b.dashed ? 'd' : 's'}`
@@ -249,19 +328,88 @@ export class MapScene {
     for (const [k, lines] of byKind) {
       const [kind, style] = k.split(':') as [BorderKind, string]
       const key: keyof SceneTheme = kind === 'stop_line' ? 'edge' : kind
-      const geo = new LineSegmentsGeometry().setPositions(segmentsOf(lines, Z_LANES))
-      const mat = this.track(lineMat(this.theme[key], widths[kind], style === 'd', 3, 3), key)
+      const geo = new LineSegmentsGeometry().setPositions(segmentsOf(lines, Z_LANES + this.lift(), h))
+      const mat = this.track(lineMat(this.colourOf(key), widths[kind], style === 'd', 3, 3), key)
+      this.laneMats.add(mat)
       const obj = new LineSegments2(geo, mat)
       if (style === 'd') obj.computeLineDistances()
       this.laneGroup.add(obj)
     }
-    const cgeo = new LineSegmentsGeometry().setPositions(segmentsOf(map.lanelets.map((l) => l.centerline), Z_CENTER))
-    const cl = new LineSegments2(cgeo, this.track(lineMat(this.theme.centerline, 1, true, 1, 1.5), 'centerline'))
+    const cgeo = new LineSegmentsGeometry().setPositions(segmentsOf(map.lanelets.map((l) => l.centerline), Z_CENTER + this.lift(), h))
+    const cmat = this.track(lineMat(this.colourOf('centerline'), 1, true, 1, 1.5), 'centerline')
+    this.laneMats.add(cmat)
+    const cl = new LineSegments2(cgeo, cmat)
     cl.computeLineDistances()
     this.centerGroup.add(cl)
-    this.bounds = map.bounds
-    this.buildGrid()
-    this.fit()
+  }
+
+  // ------------------------------------------------------------ the 3D world
+
+  /** Adds the loaded world (world.ts) and shows it. */
+  setWorld(world: LoadedWorld) {
+    if (this.world) {
+      this.worldScene.remove(this.world.root)
+      this.world.dispose()
+    }
+    this.world = world
+    this.worldScene.add(world.root)
+    this.setWorldVisible(true)
+  }
+
+  setWorldVisible(v: boolean) {
+    const on = v && this.world !== null
+    if (on === this.worldOn) return
+    this.worldOn = on
+    this.gridGroup.visible = !on
+    this.redrape()
+  }
+
+  isWorldVisible(): boolean {
+    return this.worldOn
+  }
+
+  setTreesVisible(v: boolean) {
+    if (this.world) this.world.trees.visible = v
+  }
+
+  /** Ground height under a map point: the world's when it is shown, else 0. */
+  groundAt(x: number, y: number): number {
+    return this.worldOn && this.world ? this.world.height.at(x, y) : 0
+  }
+
+  /** Frames drawn so far and what the last frame cost (for the perf check). */
+  stats() {
+    const r = this.renderer.info.render
+    return { frames: this.frames, calls: r.calls, triangles: r.triangles, worldOn: this.worldOn }
+  }
+
+  private heightFn(): HeightFn {
+    const w = this.world
+    return this.worldOn && w ? (x, y) => w.height.at(x, y) : null
+  }
+
+  private colourOf(key: keyof SceneTheme): number {
+    return this.worldOn && ASPHALT_KEYS.has(key) ? THEMES.dark[key] : this.theme[key]
+  }
+
+  private lift(): number {
+    return this.worldOn ? DRAPE : 0
+  }
+
+  /** Redraws everything that sits on the ground after the world was shown or hidden. */
+  private redrape() {
+    this.drawLanes()
+    this.setPath(this.last.path)
+    this.setGoal(this.last.goal)
+    this.setObstacles(this.last.obstacles.polys, this.last.obstacles.selected)
+    this.setPerceived(this.last.perceived)
+    if (this.last.pose) this.placeShuttle(this.last.pose)
+    this.setPoseEst(this.last.poseEst)
+    for (let i = 0; i < this.trailCount; i++) {
+      this.trailPos[3 * i + 2] = this.groundAt(this.trailPos[3 * i], this.trailPos[3 * i + 1]) + Z_TRAIL + this.lift()
+    }
+    ;(this.trailLine.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true
+    this.controls.target.z = this.groundAt(this.controls.target.x, this.controls.target.y)
   }
 
   setCenterlinesVisible(v: boolean) {
@@ -269,12 +417,14 @@ export class MapScene {
   }
 
   setPath(points: XY[]) {
+    this.last.path = points
     if (points.length < 2) {
       this.pathLine.visible = false
       return
     }
     const pos: number[] = []
-    for (const p of points) pos.push(p[0], p[1], Z_PATH)
+    const h = this.heightFn()
+    for (const p of h ? densify(points, DRAPE_STEP) : points) pos.push(p[0], p[1], Z_PATH + this.lift() + (h ? h(p[0], p[1]) : 0))
     this.pathGeo.dispose()
     this.pathGeo = new LineGeometry()
     this.pathGeo.setPositions(pos)
@@ -284,12 +434,14 @@ export class MapScene {
   }
 
   setGoal(goal: XY | null) {
+    this.last.goal = goal
     this.goalGroup.visible = goal !== null
-    if (goal) this.goalGroup.position.set(goal[0], goal[1], Z_GOAL)
+    if (goal) this.goalGroup.position.set(goal[0], goal[1], Z_GOAL + this.lift() + this.groundAt(goal[0], goal[1]))
   }
 
   /** The world's obstacles; the one at `selected` gets a strong outline. */
   setObstacles(polys: XY[][], selected = -1) {
+    this.last.obstacles = { polys, selected }
     for (const c of this.obstacleGroup.children) (c as THREE.Mesh).geometry.dispose()
     for (const m of this.obstacleMats) m.dispose()
     this.obstacleGroup.clear()
@@ -301,24 +453,27 @@ export class MapScene {
     this.meshMats.push({ mat: fill, key: 'obstacle' }, { mat: edge, key: 'obstacle' }, { mat: sel, key: 'selected' })
     polys.forEach((poly, i) => {
       if (poly.length < 3) return
+      // On the world, an obstacle sits flat at the highest ground under its corners
+      const z0 = this.worldOn ? Math.max(...poly.map(([x, y]) => this.groundAt(x, y))) + this.lift() : 0
       const shape = new THREE.Shape(poly.map(([x, y]) => new THREE.Vector2(x, y)))
       const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), fill)
-      mesh.position.z = Z_OBST
+      mesh.position.z = Z_OBST + z0
       this.obstacleGroup.add(mesh)
-      const pts = [...poly, poly[0]].map(([x, y]) => new THREE.Vector3(x, y, Z_OBST + 0.01))
+      const pts = [...poly, poly[0]].map(([x, y]) => new THREE.Vector3(x, y, Z_OBST + z0 + 0.01))
       this.obstacleGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), i === selected ? sel : edge))
     })
   }
 
   /** What /obstacles held, in the map frame, dashed. null or [] hides them. */
   setPerceived(polys: XY[][] | null) {
+    this.last.perceived = polys
     for (const c of this.perceivedGroup.children) (c as LineSegments2).geometry.dispose()
     this.perceivedGroup.clear()
     if (!polys || polys.length === 0) return
     // One fat dashed material for every call (tracked once for the theme and the resolution)
     this.perceivedMat ??= this.track(lineMat(this.theme.perceived, 2.5, true, 0.5, 0.35), 'perceived')
     const closed = polys.filter((p) => p.length >= 2).map((p) => [...p, p[0]])
-    const geo = new LineSegmentsGeometry().setPositions(segmentsOf(closed, Z_OBST + 0.03))
+    const geo = new LineSegmentsGeometry().setPositions(segmentsOf(closed, Z_OBST + 0.03 + this.lift(), this.heightFn()))
     const line = new LineSegments2(geo, this.perceivedMat)
     line.computeLineDistances()
     line.renderOrder = 6
@@ -331,7 +486,7 @@ export class MapScene {
     if (!a) return
     this.arrowKind = a.kind
     this.arrowMat.color.setHex(this.theme[a.kind])
-    this.arrow.position.set(a.x, a.y, Z_GOAL + 0.02)
+    this.arrow.position.set(a.x, a.y, Z_GOAL + 0.02 + this.lift() + this.groundAt(a.x, a.y))
     this.arrow.rotation.set(0, 0, a.yaw)
     // 3 m long, or about 70 px when zoomed out, so it reads at any zoom
     const k = Math.max(1, (70 * this.metresPerPixel()) / 3)
@@ -340,22 +495,44 @@ export class MapScene {
 
   /** The pose the stack believes, as an outline. null hides it. */
   setPoseEst(p: Pose2D | null) {
+    this.last.poseEst = p
     this.poseEst.visible = p !== null
     if (!p) return
-    this.poseEst.position.set(p.x, p.y, 0)
+    this.poseEst.position.set(p.x, p.y, this.groundAt(p.x, p.y) + this.lift())
     this.poseEst.rotation.set(0, 0, p.yaw)
+  }
+
+  /** The box on the ground: on the world it follows the slope under its wheels (display only). */
+  private placeShuttle(p: Pose2D) {
+    if (!this.worldOn) {
+      this.shuttle.position.set(p.x, p.y, 0)
+      this.shuttle.rotation.set(0, 0, p.yaw)
+      return
+    }
+    const c = Math.cos(p.yaw)
+    const s = Math.sin(p.yaw)
+    const half = VEHICLE.wheelBase / 2
+    const side = VEHICLE.width / 2
+    const zf = this.groundAt(p.x + half * c, p.y + half * s)
+    const zb = this.groundAt(p.x - half * c, p.y - half * s)
+    const zl = this.groundAt(p.x - side * s, p.y + side * c)
+    const zr = this.groundAt(p.x + side * s, p.y - side * c)
+    const pitch = Math.atan2(zf - zb, 2 * half)
+    const roll = Math.atan2(zl - zr, 2 * side)
+    this.shuttle.position.set(p.x, p.y, (zf + zb + zl + zr) / 4 + 0.02)
+    this.shuttle.rotation.set(roll, -pitch, p.yaw, 'ZYX')
   }
 
   /** Moves the shuttle (base_link) and extends the trail. */
   setPose(p: Pose2D) {
+    this.last.pose = p
     this.shuttle.visible = true
-    this.shuttle.position.set(p.x, p.y, 0)
-    this.shuttle.rotation.set(0, 0, p.yaw)
+    this.placeShuttle(p)
     const last = this.lastPose
     if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.25) {
       if (last && Math.hypot(p.x - last.x, p.y - last.y) > 20) this.clearTrail()
       if (this.trailCount < TRAIL_MAX) {
-        this.trailPos.set([p.x, p.y, Z_TRAIL], this.trailCount * 3)
+        this.trailPos.set([p.x, p.y, Z_TRAIL + this.lift() + this.groundAt(p.x, p.y)], this.trailCount * 3)
         this.trailCount++
         const attr = this.trailLine.geometry.getAttribute('position') as THREE.BufferAttribute
         attr.needsUpdate = true
@@ -364,7 +541,7 @@ export class MapScene {
       this.lastPose = { ...p }
     }
     if (this.follow) {
-      const d = new THREE.Vector3(p.x, p.y, 0).sub(this.controls.target)
+      const d = new THREE.Vector3(p.x, p.y, this.groundAt(p.x, p.y)).sub(this.controls.target)
       this.controls.target.add(d)
       this.camera().position.add(d)
     }
@@ -385,7 +562,7 @@ export class MapScene {
 
   /** Centres the view on a map point with about `span` metres visible vertically. */
   focus(x: number, y: number, span: number) {
-    const d = new THREE.Vector3(x, y, 0).sub(this.controls.target)
+    const d = new THREE.Vector3(x, y, this.groundAt(x, y)).sub(this.controls.target)
     this.controls.target.add(d)
     if (this.mode === 'ortho') {
       this.ortho.position.set(x, y, 500)
@@ -419,6 +596,14 @@ export class MapScene {
     this.controls.update()
   }
 
+  /** 3D view from `eye` towards `target` (map frame, metres; z above the ground under each point). */
+  setView(eye: [number, number, number], target: [number, number, number]) {
+    this.setCameraMode('persp')
+    this.controls.target.set(target[0], target[1], target[2] + this.groundAt(target[0], target[1]))
+    this.persp.position.set(eye[0], eye[1], eye[2] + this.groundAt(eye[0], eye[1]))
+    this.controls.update()
+  }
+
   getCameraMode(): CameraMode {
     return this.mode
   }
@@ -430,7 +615,7 @@ export class MapScene {
     const cy = (b.minY + b.maxY) / 2
     const w = (b.maxX - b.minX) * 1.08
     const h = (b.maxY - b.minY) * 1.08
-    this.controls.target.set(cx, cy, 0)
+    this.controls.target.set(cx, cy, this.groundAt(cx, cy))
     if (this.mode === 'ortho') {
       this.ortho.position.set(cx, cy, 500)
       this.ortho.zoom = Math.min(this.width / w, this.height / h)
@@ -438,31 +623,44 @@ export class MapScene {
     } else {
       const span = Math.max(h, (w * this.height) / this.width)
       const dist = span / (2 * Math.tan((this.persp.fov * Math.PI) / 360))
-      this.persp.position.set(cx, cy - dist * 0.55, dist * 0.85)
+      this.persp.position.set(cx, cy - dist * 0.55, this.controls.target.z + dist * 0.85)
     }
     this.controls.update()
   }
 
-  /** Map point under a canvas pixel, on the ground plane. */
+  /**
+   * Map point under a canvas pixel, on the ground: the plane z = 0, or the world's ground when
+   * it is shown (the ray meets the height grid after a few fixed-point steps; top-down is exact).
+   */
   pick(clientX: number, clientY: number): XY | null {
     const r = this.canvas.getBoundingClientRect()
     const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     const ray = new THREE.Raycaster()
     ray.setFromCamera(ndc, this.camera())
     const hit = new THREE.Vector3()
-    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), hit)) return null
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0)
+    if (!ray.ray.intersectPlane(plane, hit)) return null
+    if (this.worldOn) {
+      for (let i = 0; i < 8; i++) {
+        plane.constant = -(this.groundAt(hit.x, hit.y) + this.lift())
+        const prev = hit.clone()
+        if (!ray.ray.intersectPlane(plane, hit)) return null
+        if (hit.distanceToSquared(prev) < 1e-4) break
+      }
+    }
     return [hit.x, hit.y]
   }
 
   /** Canvas pixel of a map point (for tests and overlays). */
   project(x: number, y: number): { x: number; y: number } {
-    const v = new THREE.Vector3(x, y, 0).project(this.camera())
+    const v = new THREE.Vector3(x, y, this.worldOn ? this.groundAt(x, y) + this.lift() : 0).project(this.camera())
     const r = this.canvas.getBoundingClientRect()
     return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height }
   }
 
   dispose() {
     cancelAnimationFrame(this.raf)
+    this.world?.dispose()
     this.resizeObs.disconnect()
     this.controls.dispose()
     this.canvas.parentElement?.removeEventListener('pointerdown', this.onToolDown, true)
@@ -597,7 +795,18 @@ export class MapScene {
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop)
     this.controls.update()
-    this.renderer.render(this.scene, this.camera())
+    const r = this.renderer
+    const cam = this.camera()
+    r.info.reset()
+    r.setClearColor(this.theme.background)
+    r.clear()
+    if (this.worldOn) {
+      r.render(this.worldScene, cam)
+      // Top-down: the map's own drawing goes over roofs and trees, like RViz overlays
+      if (this.mode === 'ortho') r.clearDepth()
+    }
+    r.render(this.scene, cam)
+    this.frames++
   }
 
   private onToolDown = (e: PointerEvent) => {

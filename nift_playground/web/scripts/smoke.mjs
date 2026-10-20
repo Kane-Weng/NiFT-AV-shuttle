@@ -9,6 +9,11 @@
 // heading, and a scenario saved to the URL and replayed in a fresh page (same events, goal and
 // obstacles). Screenshots of each step at 1400 and 1280 px. --panels false skips this part.
 //
+// The 3D world: the World button loads it (lazily, with progress), then top-down and 3D
+// screenshots along the route in both themes, a goal clicked on the draped map, pick and project
+// against the ground, and the frame rate with and without it (SwiftShader here, so only a floor).
+// --world false skips this part.
+//
 //   npm run build && npm run smoke -- [--out <dir>] [--sim mock|pyodide] [--keep]
 //
 // Puppeteer uses its own Chrome (npx puppeteer browsers install chrome) or PUPPETEER_EXECUTABLE_PATH.
@@ -31,6 +36,7 @@ const SIM = arg('sim', 'mock')
 const PORT = Number(arg('port', 4173))
 const PANELS = arg('panels', 'true') !== 'false'
 const BASE_SPEED = arg('base-speed', '2') // set_param value; a whole number checks the int/float round trip
+const WORLD = arg('world', 'true') !== 'false'
 mkdirSync(OUT, { recursive: true })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -156,11 +162,12 @@ try {
   await page.click('[data-testid="theme-toggle"]')
   await shot('playground_3d.png', 'persp')
 
+  const world = WORLD ? await worldChecks(page, url) : null
   const panels = PANELS ? await panelChecks(browser, page, url) : null
 
   if (errors.length) fail(`console errors:\n${errors.join('\n')}`)
   console.log(
-    JSON.stringify({ ok: true, sim: SIM, lanelets, mapMs: tMap, readyMs: tReady, goal, moved: +moved.toFixed(2), mode: now.mode, panels, out: OUT }),
+    JSON.stringify({ ok: true, sim: SIM, lanelets, mapMs: tMap, readyMs: tReady, goal, moved: +moved.toFixed(2), mode: now.mode, world, panels, out: OUT }),
   )
 } catch (e) {
   console.error(e.message ?? e)
@@ -169,6 +176,143 @@ try {
 } finally {
   await browser?.close()
   server.kill()
+}
+
+// ------------------------------------------------------------------------------------- world
+
+async function worldChecks(page, url) {
+  const out = {}
+  const clickLabel = (label) =>
+    page.evaluate((label) => {
+      for (const b of document.querySelectorAll('button')) if (b.textContent === label) b.click()
+    }, label)
+  const shotW = async (name) => page.screenshot({ path: path.join(OUT, name) })
+  const fps = async () => {
+    const a = await page.evaluate(() => [window.__playground.scene.stats(), performance.now()])
+    await sleep(2000)
+    const b = await page.evaluate(() => [window.__playground.scene.stats(), performance.now()])
+    return { fps: +(((b[0].frames - a[0].frames) * 1000) / (b[1] - a[1])).toFixed(1), calls: b[0].calls, triangles: b[0].triangles }
+  }
+
+  // Off by default, and nothing of it fetched before the button
+  const before = await page.evaluate(() => performance.getEntriesByType('resource').filter((r) => r.name.includes('/world/')).length)
+  if (before !== 0) fail(`world files fetched before the World button: ${before}`)
+  await clickLabel('Top-down')
+  await page.evaluate(() => window.__playground.scene.fit())
+  out.fpsNoWorld = await fps()
+
+  const t0 = Date.now()
+  await page.click('[data-testid="toggle-world"]')
+  const sawProgress = await page
+    .waitForFunction(() => /World \d+%/.test(document.querySelector('[data-testid="toggle-world"]')?.textContent ?? '') || window.__playground?.worldReady, { timeout: 10000 })
+    .then(() => true)
+  await page.waitForFunction(() => window.__playground?.worldReady === true, { timeout: 60000 })
+  out.loadMs = Date.now() - t0
+  out.info = await page.evaluate(() => window.__playground.worldInfo)
+  out.progressShown = sawProgress
+  const fetched = await page.evaluate(() =>
+    performance.getEntriesByType('resource').filter((r) => r.name.includes('/world/')).map((r) => [r.name.split('/world/')[1], r.transferSize || r.encodedBodySize]),
+  )
+  out.fetched = Object.fromEntries(fetched)
+  for (const f of ['world.json', 'world.glb', 'height.bin.gz', 'trees.json', 'draco/draco_decoder.wasm']) if (!(f in out.fetched)) fail(`world file not fetched: ${f}`)
+  const noticeRes = await fetch(`${url}world/NOTICE`)
+  if (!noticeRes.ok || !(await noticeRes.text()).includes('MIT License')) fail('world/NOTICE missing or without the MIT notice')
+  await sleep(800)
+
+  // Top-down, whole site, dark and light
+  await page.evaluate(() => window.__playground.scene.fit())
+  await sleep(600)
+  out.fpsWorldTop = await fps()
+  await shotW('world_top_dark.png')
+  await page.click('[data-testid="theme-toggle"]')
+  await sleep(500)
+  await shotW('world_top_light.png')
+  await page.click('[data-testid="theme-toggle"]')
+
+  // Close-up on the shuttle and its path, top-down
+  const st = await page.evaluate(() => window.__playground.client.snapshot.state.pose)
+  await page.evaluate((p) => window.__playground.scene.focus(p.x, p.y, 50), st)
+  await sleep(600)
+  await shotW('world_top_closeup.png')
+
+  // The drawing sits on the ground: the shuttle and the path are lifted by the height grid
+  const lift = await page.evaluate(() => {
+    const s = window.__playground.scene
+    const p = window.__playground.client.snapshot.state.pose
+    return { ground: s.groundAt(p.x, p.y), shuttleZ: s.shuttle.position.z }
+  })
+  if (Math.abs(lift.shuttleZ - lift.ground) > 0.3) fail(`shuttle not on the ground: z ${lift.shuttleZ} ground ${lift.ground}`)
+  out.groundUnderShuttle = +lift.ground.toFixed(2)
+
+  // A goal clicked on the draped map lands where it was clicked (top-down)
+  const target = await page.evaluate(() => {
+    const path = window.__playground.client.snapshot.path
+    return path[Math.floor(path.length * 0.8)]
+  })
+  await page.evaluate((t) => window.__playground.scene.focus(t[0], t[1], 60), target)
+  await sleep(400)
+  const tp = await page.evaluate((t) => window.__playground.scene.project(t[0], t[1]), target)
+  const picked = await page.evaluate((x, y) => window.__playground.scene.pick(x, y), tp.x, tp.y)
+  out.pickErrTopM = +Math.hypot(picked[0] - target[0], picked[1] - target[1]).toFixed(3)
+  if (out.pickErrTopM > 0.3) fail(`top-down pick on the world is off by ${out.pickErrTopM} m`)
+
+  // 3D, behind the shuttle looking along the route, dark and light
+  await clickLabel('3D')
+  await sleep(300)
+  const view = await page.evaluate(() => {
+    const snap = window.__playground.client.snapshot
+    const p = snap.state.pose
+    const path = snap.path
+    let k = 0
+    let best = Infinity
+    path.forEach((q, i) => {
+      const d = Math.hypot(q[0] - p.x, q[1] - p.y)
+      if (d < best) [best, k] = [d, i]
+    })
+    const ahead = path[Math.min(path.length - 1, k + 40)] ?? [p.x + 20 * Math.cos(p.yaw), p.y + 20 * Math.sin(p.yaw)]
+    const dx = ahead[0] - p.x
+    const dy = ahead[1] - p.y
+    const n = Math.hypot(dx, dy) || 1
+    return { eye: [p.x - (14 * dx) / n, p.y - (14 * dy) / n, 7], target: [ahead[0], ahead[1], 0] }
+  })
+  await page.evaluate((v) => window.__playground.scene.setView(v.eye, v.target), view)
+  await sleep(800)
+  out.fpsWorld3d = await fps()
+  await shotW('world_3d_route_dark.png')
+  // pick in 3D: project a path point, pick the pixel back
+  const p3 = await page.evaluate(() => {
+    const path = window.__playground.client.snapshot.path
+    const s = window.__playground.scene
+    const t = path[Math.floor(path.length * 0.6)]
+    const px = s.project(t[0], t[1])
+    return { t, got: s.pick(px.x, px.y) }
+  })
+  out.pickErr3dM = +Math.hypot(p3.got[0] - p3.t[0], p3.got[1] - p3.t[1]).toFixed(3)
+  if (out.pickErr3dM > 0.5) fail(`3D pick on the world is off by ${out.pickErr3dM} m`)
+  await page.click('[data-testid="theme-toggle"]')
+  await sleep(500)
+  await shotW('world_3d_route_light.png')
+  await page.click('[data-testid="theme-toggle"]')
+  // A wide oblique of the site
+  await page.evaluate(() => {
+    const b = window.__playground.map.bounds
+    const cx = (b.minX + b.maxX) / 2
+    const cy = (b.minY + b.maxY) / 2
+    window.__playground.scene.setView([cx - 120, b.minY - 220, 230], [cx, cy - 20, 0])
+  })
+  await sleep(800)
+  await shotW('world_3d_site_dark.png')
+
+  // Off again: the grid is back, the map is flat
+  await page.click('[data-testid="toggle-world"]')
+  await sleep(300)
+  const off = await page.evaluate(() => window.__playground.scene.isWorldVisible())
+  if (off) fail('the world is still shown after the toggle')
+  await clickLabel('Top-down')
+  await page.evaluate(() => window.__playground.scene.fit())
+  await sleep(300)
+  out.fpsAfterOff = await fps()
+  return out
 }
 
 // ------------------------------------------------------------------------------------ panels
