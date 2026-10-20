@@ -178,12 +178,13 @@ class StanleyController(LateralController):
                              math.cos(path_yaw - state.yaw))
 
         # ---- Signed cross-track error e ---- #
-        # np.cross(seg, to_front) > 0  →  front axle is to the LEFT of path
+        # cross(seg, to_front) > 0  →  front axle is to the LEFT of path
         # We want e > 0 when to the RIGHT (needs left correction), so negate.
         seg_vec = p2 - p1
         to_front = front_axle - p1
         seg_len = float(np.linalg.norm(seg_vec)) + 1e-9
-        e = -float(np.cross(seg_vec, to_front)) / seg_len
+        cross = seg_vec[0] * to_front[1] - seg_vec[1] * to_front[0]
+        e = -float(cross) / seg_len
 
         # ---- Stanley formula ---- #
         v_eff = max(abs(state.vel), self._v_min)

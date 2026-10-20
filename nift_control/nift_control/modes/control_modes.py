@@ -214,9 +214,9 @@ class _AutonomousHandler(ControlModeHandler):
         p1 = np.array(node._waypoints[prev_idx])
         p2 = np.array(node._waypoints[node._current_wp_idx])
         seg_len = np.linalg.norm(p2 - p1)
-        cte = 0.0 if seg_len < 1e-6 else (
-            abs(np.cross(p2 - p1, p1 - np.array([node.state.x_rear, node.state.y_rear]))) / seg_len
-        )
+        d = p2 - p1
+        r = p1 - np.array([node.state.x_rear, node.state.y_rear])
+        cte = 0.0 if seg_len < 1e-6 else abs(d[0] * r[1] - d[1] * r[0]) / seg_len
 
         speed_factor = np.clip(1.0 - (cte / node._cte_tolerance), 0.5, 1.0)
         steer_limit_factor = 1.0 - (abs(steering_angle) / config.max_steering_angle) * 0.4
