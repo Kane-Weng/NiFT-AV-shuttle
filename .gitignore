@@ -41,7 +41,7 @@ nift_web_frontend/*.tsbuildinfo
 
 # ── CARLA / Mcity Digital Twin (nift_simulation/nift_carla) ─────────────
 # The digital twin is multi-GB Git LFS content from https://github.com/mcity/mcity-digital-twin
-# and lives OUTSIDE this repo ($MCITY_TWIN_DIR). Never commit Unreal assets here.
+# and lives OUTSIDE this repo ($DIGITAL_TWIN_DIR). Never commit Unreal assets here.
 mcity-digital-twin/
 nift_simulation/nift_carla/docker/content/
 *.umap
@@ -53,3 +53,7 @@ nift_simulation/nift_carla/docker/content/
 # rosbags
 nift_simulation/nift_carla/bags/
 rosbag2_*/
+
+# Recorded bags stay local; the folder itself is kept so launch can write into it
+/nift_bags/*
+!/nift_bags/COLCON_IGNORE

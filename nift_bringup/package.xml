@@ -3,11 +3,32 @@
 <package format="3">
   <name>nift_bringup</name>
   <version>0.0.0</version>
-  <description>System bringup and shared configuration for the NiFT shuttle. Owns the master launch file and centralized vehicle constants.</description>
+  <description>System bringup for the NiFT shuttle: the master launch file, profiles, preflight checks, launcher window. Vehicle constants live in nift_common (shuttle_config re-exports them).</description>
   <maintainer email="kaichi@umich.edu">Kane Weng</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python_qt_binding</exec_depend>
+  <!-- preflight checks: the gnss check uses nift_sensor's Octane client, the planning check loads the map -->
+  <exec_depend>nift_sensor</exec_depend>
+  <!-- vehicle facts and the map origin (shuttle_config re-export, profiles, localization component) -->
+  <exec_depend>nift_common</exec_depend>
+  <exec_depend>lanelet2</exec_depend>
+  <!-- what the components start or include -->
+  <exec_depend>nift_control</exec_depend>
+  <exec_depend>nift_waypoint</exec_depend>
+  <exec_depend>nift_web</exec_depend>
+  <exec_depend>shuttle_description</exec_depend>
+  <exec_depend>ros2_socketcan</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <!-- nift_carla (sim backend, static_path) is found at launch time: it depends on nift_bringup itself -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

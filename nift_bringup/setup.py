@@ -14,12 +14,13 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Kane Weng',
     maintainer_email='kaichi@umich.edu',
-    description='System bringup and shared configuration for the NiFT shuttle',
+    description='System bringup for the NiFT shuttle: launch, profiles, preflight, launcher',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -27,6 +28,8 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'launcher = nift_bringup.launcher:main',
+        ],
     },
 )

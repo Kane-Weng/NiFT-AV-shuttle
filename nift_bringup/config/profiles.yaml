@@ -1,0 +1,96 @@
+# Profiles for system.launch.py:
+#   ros2 launch nift_bringup system.launch.py profile:=<name> [<component>:=true|false ...] [dry_run:=true]
+#   
+#   - No profile    -> prints this list.  
+#   - dry_run:=true -> prints what a profile would start and the preflight check results, then exits.  
+#   - The checks run before every launch; checks:=false skips them.
+
+# mode     
+#   - real = the shuttle, 
+#   - sim = a sim backend, chosen by the sim_backend arg:
+#       carla      CARLA + the Mcity twin (default; the server must be running, needs an NVIDIA GPU:
+#                  nift_simulation/nift_carla/README.md)
+#       kinematic  kinematic_sim_node: no CARLA, no GPU, no LiDAR (perception off, safety filter none).
+#                  Same CAN path, shuttle plant and Octane GNSS; the shuttle moves as a bicycle model.
+# 
+#   mode:=sim / mode:=real on the command line overrides it.
+
+# components
+#   can           CAN bridge: socketcan on can_interface (can0). Sim: always on, the sim backend's virtual ECU
+#   gnss          beacon_node: Mcity Octane (sim: the sim backend's Octane emulator)
+#   localization  shuttle_tf_node: map -> base_link from GNSS                       needs gnss
+#   filter        localization_node: GNSS filter, map -> base_link + /localization/status    needs gnss
+#                 The mode is which of the two are on: localization alone = direct (every profile below),
+#                 filter alone = ekf (trajectory_controller follows the filter's status), both = shadow
+#                 (shuttle_tf_node keeps the TF, the filter runs beside it). Per run: filter:=true (shadow),
+#                 localization:=ekf (= filter:=true localization:=false), localization:=shadow | direct
+#   perception    lidar_node -> /obstacles. Off -> safety filter off (filter_type none)
+#   planning      waypoint_node: Lanelet2 routes on /planned_path                   needs localization or filter
+#   static_path   sim only: scenario_file's `waypoints` on /planned_path, in place of planning
+#   longitudinal  trajectory_controller: ADRC speed control — MANUAL mode, /teleop_cmd_vel     needs can, gnss
+#   lateral       + Pure Pursuit route following — AUTONOMOUS, /start_navigation
+#                 needs longitudinal, localization or filter, and planning or static_path
+#   bag           ros2 bag record into nift_bags/<profile>_<date> at the repo root (~/nift_ws/src/nift_bags, git-ignored)
+#   rviz          RViz (navigation.rviz)
+#   web           rosbridge on :9090 for nift_web_frontend
+#   planning and longitudinal/lateral start once beacon_node reports auth_ok.
+
+# args        optional: this profile's defaults for launch arguments (the command line still wins)
+
+shuttle:
+  description: full autonomy on the shuttle
+  mode: real
+  components: [can, gnss, localization, perception, planning, longitudinal, lateral, bag, rviz]
+
+shuttle_no_perception:
+  description: full autonomy without lidar_node; safety filter OFF, nothing stops for obstacles
+  mode: real
+  components: [can, gnss, localization, planning, longitudinal, lateral, bag, rviz]
+
+speed_control:
+  description: ADRC speed control only (MANUAL mode, speed + steer from /teleop_cmd_vel)
+  mode: real
+  components: [can, gnss, longitudinal, bag]
+
+longitudinal_test:
+  description: CAN + GNSS + bag, nothing else sending CAN; then ros2 run nift_control longitudinal_test ...
+  mode: real
+  components: [can, gnss, bag]
+
+can_only:
+  description: just the CAN bridge (candump, manual frames)
+  mode: real
+  components: [can]
+
+none:
+  description: nothing; switch components on per run, e.g. profile:=none gnss:=true (add mode:=sim for CARLA,
+    plus sim_backend:=kinematic without one)
+  mode: real
+  components: []
+
+sim:
+  description: full autonomy in CARLA, as on the shuttle
+  mode: sim
+  components: [gnss, localization, perception, planning, longitudinal, lateral, rviz]
+
+sim_filter_bench:
+  description: safety-filter bench in CARLA; scenario_file's spawn, static path and obstacles (filter_type:=...)
+  mode: sim
+  components: [gnss, localization, perception, static_path, longitudinal, lateral, rviz]
+  args:
+    scenario_file: package://nift_carla/config/scenarios/filter_bench.yaml
+
+sim_kinematic:
+  description: full autonomy without CARLA or a GPU (kinematic model, no LiDAR, safety filter off)
+  mode: sim
+  components: [gnss, localization, planning, longitudinal, lateral, rviz]
+  args:
+    sim_backend: kinematic
+
+sim_kinematic_path:
+  description: path-following bench without CARLA; scenario_file's spawn and static path (its obstacles are ignored)
+  mode: sim
+  components: [gnss, localization, static_path, longitudinal, lateral, rviz]
+  args:
+    sim_backend: kinematic
+    scenario_file: package://nift_carla/config/scenarios/filter_bench.yaml
