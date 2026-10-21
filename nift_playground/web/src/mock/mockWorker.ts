@@ -31,6 +31,7 @@ import type {
   ReadyMsg,
   RoutePreset,
   Scenario,
+  StackModel,
   WorkerToPage,
   XY,
 } from '../protocol'
@@ -77,6 +78,7 @@ type Launch = {
   filter_type: string
   spawn: string | { x: number; y: number; yaw: number } | null
   params: Record<string, Record<string, unknown>>
+  components: Record<string, boolean>
 }
 const DEFAULT_LAUNCH: Launch = {
   localization: 'direct',
@@ -89,6 +91,39 @@ const DEFAULT_LAUNCH: Launch = {
   filter_type: '',
   spawn: null,
   params: {},
+  components: {},
+}
+// A copy of launch_set.stack() for the launcher view (the mock runs every node the same way)
+const STACK: StackModel = {
+  components: {
+    can: 'the sim backend (the vehicle)',
+    gnss: 'beacon_node',
+    localization: 'shuttle_tf_node',
+    filter: 'localization_node',
+    perception: '/obstacles',
+    planning: 'waypoint_node',
+    longitudinal: 'trajectory_controller speed',
+    lateral: 'Pure Pursuit',
+  },
+  requires: {
+    localization: [['gnss']],
+    filter: [['gnss']],
+    planning: [['localization', 'filter']],
+    longitudinal: [['can'], ['gnss']],
+    lateral: [['longitudinal'], ['localization', 'filter'], ['planning', 'static_path']],
+  },
+  switchable: ['gnss', 'planning', 'longitudinal', 'lateral'],
+}
+const LOCAL_SWITCHES: Record<string, [boolean, boolean]> = { direct: [true, false], ekf: [false, true], shadow: [true, true], off: [false, false] }
+
+/** The components on, as bringup's plan.on of sim_kinematic with the launch's switches. */
+function componentsOn(l: Launch): string[] {
+  const on = new Set(['can', 'gnss', 'planning', 'longitudinal', 'lateral'])
+  for (const [c, v] of Object.entries(l.components)) (v ? on.add(c) : on.delete(c))
+  const [loc, filt] = LOCAL_SWITCHES[l.localization] ?? [true, false]
+  if (loc) on.add('localization')
+  if (filt) on.add('filter')
+  return [...on].sort()
 }
 
 const post = (m: WorkerToPage) => self.postMessage(m)
@@ -373,8 +408,8 @@ function readyMsg(): ReadyMsg {
     type: 'ready',
     pyodide: null,
     python: null,
-    launch: { sim: 'mock', options: structuredClone(launch), nodes: [] },
-    presets: { gnss_faults: [...LIVE_PRESETS, ...scheduled], gnss_dead_zones: [], routes },
+    launch: { sim: 'mock', options: structuredClone(launch), nodes: [], components: componentsOn(launch) },
+    presets: { gnss_faults: [...LIVE_PRESETS, ...scheduled], gnss_dead_zones: [], routes, stack: STACK },
   }
 }
 
@@ -390,7 +425,17 @@ function spawnOf(l: Launch) {
 function resetSim(partial?: Record<string, unknown>): string | null {
   const next = { ...launch, ...(structuredClone(partial ?? {}) as Partial<Launch>) }
   for (const k of Object.keys(partial ?? {})) if (!(k in DEFAULT_LAUNCH)) return `unknown launch option ${k}`
-  if (!['direct', 'ekf', 'shadow'].includes(next.localization)) return `localization ${next.localization}: expected direct, ekf or shadow`
+  // localization and filter given as switches become the mode, as launch_set.normalize_options does
+  const comps = { ...(next.components ?? {}) }
+  if ('localization' in comps || 'filter' in comps) {
+    const [loc, filt] = LOCAL_SWITCHES[next.localization] ?? [true, false]
+    const key = [comps.localization ?? loc, comps.filter ?? filt]
+    next.localization = Object.entries(LOCAL_SWITCHES).find(([, v]) => v[0] === key[0] && v[1] === key[1])![0]
+    delete comps.localization
+    delete comps.filter
+  }
+  next.components = comps
+  if (!(next.localization in LOCAL_SWITCHES)) return `localization ${next.localization}: expected direct, ekf, shadow or off`
   if (typeof next.perception === 'string') next.perception = next.perception === 'true'
   if (next.filter_type && next.filter_type !== 'none' && !next.perception) return `filter_type ${next.filter_type} needs perception`
   if (typeof next.spawn === 'string' && !routes.some((r) => r.id === next.spawn)) return `spawn: unknown route ${next.spawn}`

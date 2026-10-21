@@ -41,7 +41,7 @@ The map is drawn from the Lanelet2 file in JavaScript first. Pyodide loads only 
 
 ## The 3D world
 
-The **World** button on the map shows the test site in 3D under our lanes: roads, curbs, markings, buildings, signs, poles, traffic lights and trees. It's off by default. The first click loads about 2 MB (with progress on the button), later clicks only show or hide it. It works in the top-down and the 3D view and in both themes. In the top-down view the lanes, the path and the shuttle are drawn over roofs and trees, like RViz overlays. In 3D they're depth tested against the world.
+The **3D world** switch (Settings, View) shows the test site in 3D under our lanes: roads, curbs, markings, buildings, signs, poles, traffic lights and trees. It's off by default. The first time it's turned on it loads about 2 MB (with progress over the map), later toggles only show or hide it. It works in the top-down and the 3D view and in both themes. In the top-down view the lanes, the path and the shuttle are drawn over roofs and trees, like RViz overlays. In 3D they're depth tested against the world.
 
 The site rises about 13 m from one end to the other, but the stack works on a flat map. So the page lifts what it draws onto the ground with a height grid (1 m cells) while the world is shown: the lanes, the path, the goal, obstacles, the trail and the shuttle, which also tilts with the slope. This is display only. The nodes, the sim and every message stay 2D, and clicks on the map still give map x and y.
 

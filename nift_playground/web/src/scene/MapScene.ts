@@ -9,8 +9,24 @@
  *   Camera: top-down orthographic by default (left drag pans, right drag rotates, wheel zooms),
  *   or perspective (right drag also tilts). A click without a drag reports the map point, which
  *   the page uses for the goal. A tool can take a left-button gesture (onDragStart returns true):
- *   the camera then stays still and the tool gets the drag (2D Goal and 2D Pose Estimate with
- *   their heading, moving an obstacle).
+ *   the camera then stays still and the tool gets the drag (2D Goal and Set pose with their
+ *   heading, moving an obstacle).
+ *
+ *   Follow keeps the shuttle in the middle and turns the view with its heading, like a game
+ *   camera. Top-down, the map turns so the shuttle always points up the screen. In 3D it is a
+ *   chase camera, behind and above the shuttle and looking along its heading. The camera glides
+ *   after the shuttle (follower.ts) instead of copying each 10 Hz state, so GNSS noise and the
+ *   small weave it gives the shuttle do not shake the view. It follows the sim's true pose; the
+ *   stack's estimate jumps with every noisy fix. While following, left drag does not pan, the
+ *   wheel zooms about the shuttle and right drag cannot turn the view (the heading does). In 3D
+ *   right drag still tilts it. Turning the follow on glides the view onto the shuttle and turns
+ *   it to the heading. Turning it off leaves the view as it is.
+ *
+ *   The shuttle and the stack's pose outline are drawn from states that come about 10 times a
+ *   second. They are played back smoothly between states, a little behind the newest one
+ *   (interp.ts), so the box moves every frame instead of stepping. Paused, stepping, after a reset
+ *   or a teleport they jump straight to the newest state. The trail and the follow use the same
+ *   drawn pose, so they never run ahead of the box.
  *
  *   The scene has no React in it. The page creates one MapScene per canvas and feeds it data.
  *
@@ -33,6 +49,8 @@ import type { Pose2D } from '../protocol'
 import { VEHICLE } from '../geo/site'
 import { THEMES, type SceneTheme, type ThemeName } from './theme'
 import type { LoadedWorld } from './world'
+import { FollowSmoother, wrapAngle } from './follower'
+import { PoseInterpolator } from './interp'
 
 export type CameraMode = 'ortho' | 'persp'
 
@@ -66,6 +84,8 @@ const TRAIL_MAX = 4000
 const DRAPE = 0.15
 // Longest straight piece of a draped line [m] (the height grid has 1 m cells)
 const DRAPE_STEP = 1.0
+// The 3D chase camera's tilt from straight down [rad]: about 25 degrees above the horizon
+const CHASE_POLAR = 1.13
 
 type HeightFn = ((x: number, y: number) => number) | null
 
@@ -121,6 +141,11 @@ function makeAxes(length: number, radius: number): THREE.Group {
   return g
 }
 
+/** OrbitControls' azimuth (z up) that puts the camera behind a shuttle heading `yaw`, so the heading points up the screen. */
+function azimuthOf(yaw: number): number {
+  return yaw - Math.PI / 2
+}
+
 export class MapScene {
   readonly renderer: THREE.WebGLRenderer
   readonly scene = new THREE.Scene()
@@ -152,7 +177,23 @@ export class MapScene {
   private mapAxes: THREE.Group
   private bounds = { minX: -50, minY: -50, maxX: 50, maxY: 50 }
   private follow = false
+  private follower = new FollowSmoother()
+  private lastFrame = 0
+  /** The glide onto the shuttle when the follow turns on: from this target, span, azimuth and tilt, over `ms`. */
+  private glide: {
+    t0: number
+    ms: number
+    from: THREE.Vector3
+    fromSpan: number
+    toSpan: number
+    fromAz: number
+    fromPolar: number
+  } | null = null
   private lastPose: Pose2D | null = null
+  /** Plays the 10 Hz states back smoothly; `shown` is the pose drawn this frame, `shownEst` the estimate. */
+  private interp = new PoseInterpolator()
+  private shown: Pose2D | null = null
+  private shownEst: Pose2D | null = null
   private down: { x: number; y: number; t: number } | null = null
   private arrowKind: 'goal' | 'pose' = 'goal'
   private dragging = false
@@ -202,8 +243,9 @@ export class MapScene {
 
     this.scene.add(this.gridGroup, this.laneGroup, this.centerGroup, this.obstacleGroup, this.perceivedGroup, this.goalGroup)
 
-    // RViz's pose arrows: a flat arrow, 3 m long, for the goal or pose being dragged
-    this.arrowMat = new THREE.MeshBasicMaterial({ color: this.theme.goal, side: THREE.DoubleSide, depthWrite: false })
+    // RViz's pose arrows: a flat arrow, 3 m long, for the goal or pose being dragged. Drawn last
+    // and without the depth test, so the ground, the world and the lanes never hide it
+    this.arrowMat = new THREE.MeshBasicMaterial({ color: this.theme.goal, side: THREE.DoubleSide, depthWrite: false, depthTest: false })
     const shape = new THREE.Shape()
     shape.moveTo(0, -0.18)
     shape.lineTo(2.1, -0.18)
@@ -214,7 +256,7 @@ export class MapScene {
     shape.lineTo(0, 0.18)
     shape.closePath()
     const arrowMesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), this.arrowMat)
-    arrowMesh.renderOrder = 7
+    arrowMesh.renderOrder = 100
     this.arrow.add(arrowMesh)
     this.arrow.visible = false
     this.scene.add(this.arrow)
@@ -277,7 +319,7 @@ export class MapScene {
     this.resizeObs.observe(canvas.parentElement ?? canvas)
     this.resize()
     this.setTheme('dark')
-    this.loop()
+    this.loop(performance.now())
   }
 
   // ------------------------------------------------------------ public API
@@ -403,8 +445,8 @@ export class MapScene {
     this.setGoal(this.last.goal)
     this.setObstacles(this.last.obstacles.polys, this.last.obstacles.selected)
     this.setPerceived(this.last.perceived)
-    if (this.last.pose) this.placeShuttle(this.last.pose)
-    this.setPoseEst(this.last.poseEst)
+    if (this.shown) this.placeShuttle(this.shown)
+    this.drawPoseEst(this.shownEst)
     for (let i = 0; i < this.trailCount; i++) {
       this.trailPos[3 * i + 2] = this.groundAt(this.trailPos[3 * i], this.trailPos[3 * i + 1]) + Z_TRAIL + this.lift()
     }
@@ -480,7 +522,7 @@ export class MapScene {
     this.perceivedGroup.add(line)
   }
 
-  /** The arrow of a 2D Goal or 2D Pose Estimate being placed, or null to hide it. */
+  /** The arrow of a 2D Goal or Set pose being placed, or null to hide it. */
   setArrow(a: ArrowSpec | null) {
     this.arrow.visible = a !== null
     if (!a) return
@@ -493,9 +535,25 @@ export class MapScene {
     this.arrow.scale.set(k, k, 1)
   }
 
-  /** The pose the stack believes, as an outline. null hides it. */
-  setPoseEst(p: Pose2D | null) {
-    this.last.poseEst = p
+  /**
+   * A state from the sim: sim time `t` [s], the true pose (the box), the pose the stack believes
+   * (an outline, null hides it) and whether the sim is paused. Both are drawn interpolated between
+   * states, a little behind the newest (interp.ts).
+   */
+  setState(t: number, pose: Pose2D, poseEst: Pose2D | null, paused: boolean) {
+    this.last.pose = pose
+    this.last.poseEst = poseEst
+    this.interp.push(t, pose, poseEst, paused, performance.now())
+  }
+
+  /** Shows the shuttle at `p` at once, without interpolating (the estimate stays as it is). */
+  setPose(p: Pose2D) {
+    this.last.pose = p
+    this.interp.reset()
+    this.interp.push(0, p, this.last.poseEst, true, performance.now())
+  }
+
+  private drawPoseEst(p: Pose2D | null) {
     this.poseEst.visible = p !== null
     if (!p) return
     this.poseEst.position.set(p.x, p.y, this.groundAt(p.x, p.y) + this.lift())
@@ -523,9 +581,11 @@ export class MapScene {
     this.shuttle.rotation.set(roll, -pitch, p.yaw, 'ZYX')
   }
 
-  /** Moves the shuttle (base_link) and extends the trail. */
-  setPose(p: Pose2D) {
-    this.last.pose = p
+  /** Draws the shuttle (base_link) at the pose of this frame and extends the trail. */
+  private showPose(p: Pose2D, est: Pose2D | null) {
+    this.shown = p
+    this.shownEst = est
+    this.drawPoseEst(est)
     this.shuttle.visible = true
     this.placeShuttle(p)
     const last = this.lastPose
@@ -540,11 +600,6 @@ export class MapScene {
       }
       this.lastPose = { ...p }
     }
-    if (this.follow) {
-      const d = new THREE.Vector3(p.x, p.y, this.groundAt(p.x, p.y)).sub(this.controls.target)
-      this.controls.target.add(d)
-      this.camera().position.add(d)
-    }
   }
 
   clearTrail() {
@@ -552,16 +607,97 @@ export class MapScene {
     this.trailLine.geometry.setDrawRange(0, 0)
   }
 
-  /** Follows the shuttle. From a view wider than 200 m it first zooms to 60 m around it. */
-  setFollow(v: boolean) {
+  /**
+   * Follows the shuttle and turns with its heading. The view glides onto it over `ms`, turning to
+   * the heading on the way (and in 3D tilting to the chase view), and from a view wider than 200 m
+   * it also zooms in to 60 m around it. Panning and zooming to the cursor would move the target
+   * away from the shuttle for a frame, so both are off while following. The heading holds the
+   * view's azimuth: OrbitControls clamps it to one angle, so right drag cannot turn the view but
+   * can still tilt it in 3D. Turning the follow off frees the azimuth and leaves the view as it is.
+   */
+  setFollow(v: boolean, ms = 900) {
     this.follow = v
-    if (!v || !this.lastPose) return
-    if (this.metresPerPixel() * this.height > 200) this.focus(this.lastPose.x, this.lastPose.y, 60)
-    else this.setPose(this.lastPose)
+    this.controls.enablePan = !v
+    this.controls.zoomToCursor = !v
+    this.glide = null
+    this.follower.reset()
+    if (!v) {
+      this.controls.minAzimuthAngle = -Infinity
+      this.controls.maxAzimuthAngle = Infinity
+      return
+    }
+    if (!this.last.pose) return
+    const span = this.metresPerPixel() * this.height
+    this.glide = {
+      t0: performance.now(),
+      ms,
+      from: this.controls.target.clone(),
+      fromSpan: span,
+      toSpan: span > 200 ? 60 : span,
+      fromAz: this.controls.getAzimuthalAngle(),
+      fromPolar: this.controls.getPolarAngle(),
+    }
+  }
+
+  /**
+   * One frame of the follow: the smoothed pose moves the target (and the camera with it) and its
+   * heading sets the azimuth. During the glide the view eases from where it was towards the
+   * smoothed pose, so it lands on a moving shuttle.
+   */
+  private stepFollow(now: number, dt: number) {
+    const p = this.shown
+    if (!p) return
+    const s = this.follower.update(p, dt)
+    const to = new THREE.Vector3(s.x, s.y, this.groundAt(s.x, s.y))
+    const toAz = azimuthOf(s.yaw)
+    const g = this.glide
+    if (!g) {
+      this.moveTarget(to)
+      this.setAzimuth(toAz)
+      return
+    }
+    const u = Math.min(1, (now - g.t0) / g.ms)
+    const k = u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2 // ease in and out
+    const target = g.from.clone().lerp(to, k)
+    const span = Math.exp(Math.log(g.fromSpan) + (Math.log(g.toSpan) - Math.log(g.fromSpan)) * k)
+    const az = g.fromAz + wrapAngle(toAz - g.fromAz) * k
+    this.moveTarget(target)
+    this.setAzimuth(az)
+    if (this.mode === 'ortho') {
+      this.ortho.zoom = this.height / span
+      this.ortho.updateProjectionMatrix()
+    } else {
+      const polar = g.fromPolar + (CHASE_POLAR - g.fromPolar) * k
+      this.orbit(az, polar, span / (2 * Math.tan((this.persp.fov * Math.PI) / 360)))
+    }
+    if (u >= 1) this.glide = null
+  }
+
+  /** Moves the controls' target to `to`, and the camera by the same step. */
+  private moveTarget(to: THREE.Vector3) {
+    const d = to.clone().sub(this.controls.target)
+    this.controls.target.add(d)
+    this.camera().position.add(d)
+  }
+
+  /** Holds the view's azimuth at `az` (OrbitControls' angle); the next controls.update() turns to it. */
+  private setAzimuth(az: number) {
+    const a = wrapAngle(az)
+    this.controls.minAzimuthAngle = a
+    this.controls.maxAzimuthAngle = a
+  }
+
+  /** Puts the 3D camera `dist` from the target at OrbitControls' azimuth `az` and tilt `polar` from straight down. */
+  private orbit(az: number, polar: number, dist: number) {
+    const t = this.controls.target
+    const h = Math.sin(polar) * dist
+    // OrbitControls' azimuth 0 looks north from the south; it grows towards the west
+    this.persp.position.set(t.x + h * Math.sin(az), t.y - h * Math.cos(az), t.z + Math.cos(polar) * dist)
   }
 
   /** Centres the view on a map point with about `span` metres visible vertically. */
   focus(x: number, y: number, span: number) {
+    this.glide = null
     const d = new THREE.Vector3(x, y, this.groundAt(x, y)).sub(this.controls.target)
     this.controls.target.add(d)
     if (this.mode === 'ortho') {
@@ -582,10 +718,14 @@ export class MapScene {
     const metresPerPx = this.metresPerPixel()
     this.mode = mode
     if (mode === 'persp') {
-      // Same footprint as the ortho view, seen from the south and above
+      // Same footprint as the ortho view, seen from the south and above, or the chase view when following
       const span = metresPerPx * this.height
       const dist = span / (2 * Math.tan((this.persp.fov * Math.PI) / 360))
       this.persp.position.set(target.x, target.y - dist * 0.55, dist * 0.85)
+      if (this.follow && !this.glide && isFinite(this.controls.minAzimuthAngle)) {
+        this.controls.target.copy(target)
+        this.orbit(this.controls.minAzimuthAngle, CHASE_POLAR, dist)
+      }
     } else {
       this.ortho.position.set(target.x, target.y, 500)
       this.ortho.zoom = this.ortho.zoom || 1
@@ -598,6 +738,7 @@ export class MapScene {
 
   /** 3D view from `eye` towards `target` (map frame, metres; z above the ground under each point). */
   setView(eye: [number, number, number], target: [number, number, number]) {
+    this.glide = null
     this.setCameraMode('persp')
     this.controls.target.set(target[0], target[1], target[2] + this.groundAt(target[0], target[1]))
     this.persp.position.set(eye[0], eye[1], eye[2] + this.groundAt(eye[0], eye[1]))
@@ -608,8 +749,12 @@ export class MapScene {
     return this.mode
   }
 
-  /** Fits the camera to the map bounds, top-down. */
+  /** Fits the camera to the map bounds, top-down and north up. */
   fit() {
+    this.glide = null
+    // Held at north up for this one update, then free again (the page stops the follow with it)
+    this.controls.minAzimuthAngle = 0
+    this.controls.maxAzimuthAngle = 0
     const b = this.bounds
     const cx = (b.minX + b.maxX) / 2
     const cy = (b.minY + b.maxY) / 2
@@ -626,6 +771,10 @@ export class MapScene {
       this.persp.position.set(cx, cy - dist * 0.55, this.controls.target.z + dist * 0.85)
     }
     this.controls.update()
+    if (!this.follow) {
+      this.controls.minAzimuthAngle = -Infinity
+      this.controls.maxAzimuthAngle = Infinity
+    }
   }
 
   /**
@@ -788,8 +937,13 @@ export class MapScene {
     for (const { mat } of this.lineMats) mat.resolution.set(w, h)
   }
 
-  private loop = () => {
+  private loop = (now: number) => {
     this.raf = requestAnimationFrame(this.loop)
+    const dt = this.lastFrame ? (now - this.lastFrame) / 1000 : 0
+    this.lastFrame = now
+    const s = this.interp.sample(now)
+    if (s) this.showPose(s.pose, s.est)
+    if (this.follow) this.stepFollow(now, dt)
     this.controls.update()
     const r = this.renderer
     const cam = this.camera()

@@ -246,6 +246,11 @@ CASES = [
     {'gnss_faults': 'dropout_1.5s_turn', 'spawn': '04'},
     {'gnss_dead_zones': 'route04_turn', 'spawn': '04'},
     {'gnss_faults': [{'kind': 'dropout', 't_s': 20.0, 'duration_s': 2.0}]},
+    # the launcher view's switches
+    {'components': {'lateral': False}},
+    {'components': {'lateral': False, 'longitudinal': False}},
+    {'localization': 'off', 'components': {'planning': False, 'lateral': False}},
+    {'localization': 'off', 'components': {'gnss': False, 'planning': False, 'longitudinal': False, 'lateral': False}},
 ]
 
 
@@ -347,3 +352,18 @@ def test_fakeros_merges_the_same(playground, opts):
                 assert list(t) == v, (spec.name, k)
             else:
                 assert t == v and type(t) is type(v), (spec.name, k, t, v)
+
+
+def test_components_option(playground):
+    """The launcher view's switches: localization and filter become the mode, the rest go to bringup."""
+    from playground import launch_set
+    o = launch_set.normalize_options({'components': {'filter': True}})
+    assert o['localization'] == 'shadow' and o['components'] == {}
+    o = launch_set.normalize_options({'localization': 'ekf', 'components': {'filter': False, 'lateral': 'false'}})
+    assert o['localization'] == 'off' and o['components'] == {'lateral': False}
+    with pytest.raises(launch_set.LaunchError, match='cannot be switched'):
+        launch_set.normalize_options({'components': {'rviz': True}})
+    with pytest.raises(launch_set.LaunchError, match='lateral needs'):
+        launch_set.build({'components': {'planning': False}})
+    ls = launch_set.build({'localization': 'off', 'components': {'gnss': False, 'planning': False, 'longitudinal': False, 'lateral': False}})
+    assert [n.name for n in ls.nodes if n.repo] == ['kinematic_sim']

@@ -24,6 +24,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer'
+import { closeSettings, openSection as openSettingsSection, openSettings, openStack, toggleTheme } from './settings.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -79,7 +80,8 @@ try {
   page.on('pageerror', (e) => errors.push(String(e)))
 
   const t0 = Date.now()
-  await page.goto(`${url}?sim=${SIM}&theme=dark`, { waitUntil: 'load' })
+  // follow=0: the camera stays put, so map clicks land where they were projected. log=1: the checks read the log dock
+  await page.goto(`${url}?sim=${SIM}&theme=dark&follow=0&log=1`, { waitUntil: 'load' })
   await page.waitForFunction(() => window.__playground?.mapReady === true, { timeout: 30000 })
   const tMap = Date.now() - t0
   await page.waitForFunction(() => window.__playground?.client?.snapshot?.ready === true, { timeout: 120000 })
@@ -136,10 +138,10 @@ try {
   await page.evaluate(() => window.__playground.client.send({ type: 'pause' }))
   await sleep(300)
   await page.screenshot({ path: path.join(OUT, 'playground_dark.png') })
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await sleep(400)
   await page.screenshot({ path: path.join(OUT, 'playground_light.png') })
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await sleep(300)
   // Close-ups around the shuttle: top-down, then 3D
   const shot = async (name, cam) => {
@@ -157,9 +159,9 @@ try {
     await page.screenshot({ path: path.join(OUT, name) })
   }
   await shot('playground_dark_closeup.png', 'ortho')
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await shot('playground_light_closeup.png', 'ortho')
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await shot('playground_3d.png', 'persp')
 
   const world = WORLD ? await worldChecks(page, url) : null
@@ -202,11 +204,13 @@ async function worldChecks(page, url) {
   out.fpsNoWorld = await fps()
 
   const t0 = Date.now()
+  await openSettings(page, 'view')
   await page.click('[data-testid="toggle-world"]')
   const sawProgress = await page
-    .waitForFunction(() => /World \d+%/.test(document.querySelector('[data-testid="toggle-world"]')?.textContent ?? '') || window.__playground?.worldReady, { timeout: 10000 })
+    .waitForFunction(() => /Loading \d+%/.test(document.querySelector('[data-testid="toggle-world"]')?.textContent ?? '') || window.__playground?.worldReady, { timeout: 10000 })
     .then(() => true)
   await page.waitForFunction(() => window.__playground?.worldReady === true, { timeout: 60000 })
+  await closeSettings(page)
   out.loadMs = Date.now() - t0
   out.info = await page.evaluate(() => window.__playground.worldInfo)
   out.progressShown = sawProgress
@@ -224,10 +228,10 @@ async function worldChecks(page, url) {
   await sleep(600)
   out.fpsWorldTop = await fps()
   await shotW('world_top_dark.png')
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await sleep(500)
   await shotW('world_top_light.png')
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
 
   // Close-up on the shuttle and its path, top-down
   const st = await page.evaluate(() => window.__playground.client.snapshot.state.pose)
@@ -292,10 +296,10 @@ async function worldChecks(page, url) {
   }, [view.k + 20, view.k + 40])
   out.pickErr3dM = +Math.max(...p3.map((p) => (p.got ? Math.hypot(p.got[0] - p.t[0], p.got[1] - p.t[1]) : Infinity))).toFixed(3)
   if (out.pickErr3dM > 0.5) fail(`3D pick on the world is off by ${out.pickErr3dM} m`)
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   await sleep(500)
   await shotW('world_3d_route_light.png')
-  await page.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page)
   // A wide oblique of the site
   await page.evaluate(() => {
     const b = window.__playground.map.bounds
@@ -307,7 +311,9 @@ async function worldChecks(page, url) {
   await shotW('world_3d_site_dark.png')
 
   // Off again: the grid is back, the map is flat
+  await openSettings(page, 'view')
   await page.click('[data-testid="toggle-world"]')
+  await closeSettings(page)
   await sleep(300)
   const off = await page.evaluate(() => window.__playground.scene.isWorldVisible())
   if (off) fail('the world is still shown after the toggle')
@@ -336,12 +342,17 @@ async function panelChecks(browser, page, url) {
     fail(`timed out waiting for ${what} (status ${s?.status}, t ${s?.t}, paused ${s?.paused}, gnss ${JSON.stringify(s?.gnss)})`)
   }
   const shotP = async (name) => page.screenshot({ path: path.join(OUT, name) })
-  /** Opens a folding section (by its testid) when the probe inside it is not shown yet. */
-  const openSection = async (section, probe) => {
-    if (await page.$(`[data-testid="${section}"] [data-testid="${probe}"]`)) return
-    await page.click(`[data-testid="${section}"] button`)
-    await page.waitForSelector(`[data-testid="${section}"] [data-testid="${probe}"]`, { timeout: 3000 })
-  }
+  // What the old sidebar buttons did, now sent directly: the page places obstacles with the map tool only
+  const addAhead = () =>
+    page.evaluate(() => {
+      const c = window.__playground.client
+      const { x, y, yaw } = c.snapshot.state.pose
+      const oid = `o${c.snapshot.obstacles.length + 1}`
+      c.send({ type: 'obstacle_add', oid, box: { x: x + 12 * Math.cos(yaw), y: y + 12 * Math.sin(yaw), yaw, length: 4.5, width: 1.9 } })
+    })
+  const clearObstacles = () => page.evaluate(() => window.__playground.client.send({ type: 'set_obstacles', obstacles: [] }))
+  /** Shows the probe inside a pane (by its testid): a settings tab or a folding sidebar section. */
+  const openSection = (section, probe) => openSettingsSection(page, section, probe)
   const px = (x, y) => page.evaluate((x, y) => window.__playground.scene.project(x, y), x, y)
   const status = async () => (await st()).status
   const reset = async (launch) => {
@@ -391,9 +402,7 @@ async function panelChecks(browser, page, url) {
   await reset()
   // The real stack keeps the page's obstacles across a reset (they are the page's world): clear them
   if ((await snap()).obstacles.length) {
-    await page.evaluate(() => {
-      for (const b of document.querySelectorAll('[data-testid="obstacles-section"] button')) if (b.textContent === 'Clear') b.click()
-    })
+    await clearObstacles()
     await until(async () => (await snap()).obstacles.length === 0, 'the obstacles to clear')
   }
   if ((await st()).paused) await page.click('[data-testid="sim-pause"]')
@@ -403,7 +412,7 @@ async function panelChecks(browser, page, url) {
   await goalAhead(70)
   await page.click('[data-testid="cmd-start"]')
   await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING after Start')
-  await until(async () => (await text('[data-testid="last-reply"]')).includes('Navigation started'), 'the start reply')
+  if (await page.$('[data-testid="last-reply"]')) fail(`Start was refused: ${await text('[data-testid="last-reply"]')}`)
   out.start = 'ok'
 
   // ---- pause and step n
@@ -447,9 +456,13 @@ async function panelChecks(browser, page, url) {
   if (Math.hypot(camAfter.x - p.x, camAfter.y - p.y) > 2) fail('the camera panned during the obstacle drag')
   const id = (await snap()).obstacles[0].oid
   await shotP('panels_obstacle.png')
-  await page.click(`[data-testid="obstacle-del-${id}"]`)
-  await until(async () => (await snap()).obstacles.length === 0, 'the obstacle to go')
-  out.obstacles = `placed, dragged 6 m, deleted ${id}`
+  // In Obstacle mode a click on an obstacle removes it
+  await page.click('[data-testid="tool-obstacle"]')
+  p = await px(c0[0] + 6, c0[1])
+  await page.mouse.click(p.x, p.y)
+  await until(async () => (await snap()).obstacles.length === 0, 'the obstacle to go on a click in Obstacle mode')
+  await page.click('[data-testid="tool-select"]')
+  out.obstacles = `placed, dragged 6 m, removed ${id} by a click`
 
   // ---- set_param staged, then the launch form: perception on, ekf; reset applies both
   await openSection('params-section', 'param-base_speed')
@@ -462,6 +475,7 @@ async function panelChecks(browser, page, url) {
   const before = await page.evaluate(() => window.__playground.client.snapshot.readyInfo)
   await page.click('[data-testid="launch-apply"]')
   await page.waitForFunction((b) => window.__playground.client.snapshot.ready && window.__playground.client.snapshot.readyInfo !== b, {}, before)
+  await closeSettings(page)
   const opts = await page.evaluate(() => window.__playground.client.snapshot.readyInfo.launch.options ?? window.__playground.client.snapshot.readyInfo.launch)
   if (opts.localization !== 'ekf' || opts.perception !== true) fail(`launch options not applied: ${JSON.stringify(opts)}`)
   if (opts.params?.trajectory_controller?.base_speed !== Number(BASE_SPEED)) fail(`base_speed not applied on reset: ${JSON.stringify(opts.params)}`)
@@ -475,32 +489,22 @@ async function panelChecks(browser, page, url) {
 
   // ---- perceived vs placed: an obstacle ahead in the lane (perception on)
   if ((await st()).paused) await page.click('[data-testid="sim-pause"]')
-  await page.evaluate(() => {
-    for (const b of document.querySelectorAll('[data-testid="obstacles-section"] button')) if (b.textContent === 'Ahead') b.click()
-  })
+  await addAhead()
   await until(async () => ((await snap()).perceived ?? []).length === 1, 'the obstacle to be perceived')
   const s1 = await st()
   await page.evaluate((p) => window.__playground.scene.focus(p.x + 6 * Math.cos(p.yaw), p.y + 6 * Math.sin(p.yaw), 40), s1.pose)
   await sleep(400)
   await shotP('panels_perceived.png')
-  out.perceived = (await text('[data-testid="obstacle-list"]')).includes('seen') ? 'seen' : fail('the list does not mark it seen')
-  await page.click('[data-testid="obstacles-section"] [data-testid^="obstacle-del-"]')
+  out.perceived = 'seen'
+  await clearObstacles()
   await until(async () => (await snap()).obstacles.length === 0, 'the obstacle to go')
 
   // ---- GNSS fault preset: dropout 3 s while navigating -> SAFE_STOP, then Resume
   await goalAhead(80)
   await page.click('[data-testid="cmd-start"]')
   await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING')
-  await openSection('gnss-section', 'fault-live')
-  await page.select('[data-testid="fault-live"]', 'dropout')
-  await page.evaluate(() => {
-    const el = [...document.querySelectorAll('[data-testid="gnss-section"] label')].find((l) => l.textContent.startsWith('duration_s'))
-    const input = el.querySelector('input')
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
-    set.call(input, '3')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-  await page.click('[data-testid="fault-apply"]')
+  // Live faults have no buttons any more (the page offers the fault scenarios); the worker still takes them
+  await page.evaluate(() => window.__playground.client.send({ type: 'gnss_fault', preset: 'dropout', params: { duration_s: 3 } }))
   await until(async () => (await status()) === 'SAFE_STOP', 'SAFE_STOP after the GNSS dropout')
   await page.waitForSelector('[data-testid="safe-stop-banner"]')
   await page.click('[data-testid="dock-tab-events"]')
@@ -531,12 +535,10 @@ async function panelChecks(browser, page, url) {
   await until(async () => (await status()) === 'IDLE', 'IDLE after manual off')
   out.teleop = `W then A: steer ${((steerTele * 180) / Math.PI).toFixed(1)} deg, Space stops`
 
-  // ---- DBW E-stop latches the ECU; power cycle releases it
-  await openSection('dbw-section', 'cmd-dbw_estop')
-  await page.click('[data-testid="cmd-dbw_estop"]')
+  // ---- DBW E-stop latches the ECU; power cycle releases it (no buttons on the page any more)
+  await page.evaluate(() => window.__playground.client.send({ type: 'cmd', name: 'dbw_estop' }))
   await until(async () => (await st()).ecu === 'ESTOP', 'ECU ESTOP')
-  await page.waitForSelector('[data-testid="dbw-latched-banner"]')
-  await page.click('[data-testid="cmd-power_cycle"]')
+  await page.evaluate(() => window.__playground.client.send({ type: 'cmd', name: 'power_cycle' }))
   await until(async () => (await st()).ecu !== 'ESTOP', 'ECU released')
   out.dbw = 'latched, power cycled'
 
@@ -577,9 +579,7 @@ async function panelChecks(browser, page, url) {
   await page.click('[data-testid="cmd-start"]')
   await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING')
   await sleep(1500)
-  await page.evaluate(() => {
-    for (const b of document.querySelectorAll('[data-testid="obstacles-section"] button')) if (b.textContent === 'Ahead') b.click()
-  })
+  await addAhead()
   await until(async () => (await snap()).obstacles.length === 1, 'the scenario obstacle')
   await sleep(800)
   await pause()
@@ -589,6 +589,7 @@ async function panelChecks(browser, page, url) {
   const link = await value('[data-testid="scenario-link"]')
   if (!link.includes('#scenario=')) fail(`no scenario link: ${link}`)
   if ((await page.url()) !== link) fail('the page URL was not updated with the scenario')
+  await closeSettings(page)
   const saved = await page.evaluate(async () => {
     const c = window.__playground.client
     return new Promise((res) => {
@@ -635,14 +636,51 @@ async function panelChecks(browser, page, url) {
   await page2.evaluate((p) => window.__playground.scene.focus(p.x, p.y, 60), b1.state.pose)
   await sleep(500)
   await page2.screenshot({ path: path.join(OUT, 'panels_scenario_replayed_1280.png') })
-  await page2.click('[data-testid="theme-toggle"]')
+  await toggleTheme(page2)
   await sleep(400)
   await page2.screenshot({ path: path.join(OUT, 'panels_light_1280.png') })
   await page2.close()
   out.scenario = `${saved.events.length} events, ${link.length} chars, replayed equal`
 
-  // ---- the whole page, dark, sections open
-  for (const [sec, probe] of [['gnss-section', 'fault-live'], ['launch-section', 'launch-perception'], ['diag-section', 'diag-list']]) await openSection(sec, probe)
+  // ---- the stack window: lateral off applies with a reset, Full stack puts it back
+  const nextReady = async (action) => {
+    const before = await page.evaluate(() => window.__playground.client.snapshot.readyInfo)
+    await action()
+    await page.waitForFunction((b) => window.__playground.client.snapshot.ready && window.__playground.client.snapshot.readyInfo !== b, {}, before)
+    return page.evaluate(() => window.__playground.client.snapshot.readyInfo.launch.components ?? [])
+  }
+  await openStack(page)
+  // A click on a stop selects it; its card has the On | Off switch
+  await page.evaluate(() => document.querySelector('[data-testid="stack-node-lateral"]').dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  if ((await page.$eval('[data-testid="stack-node-lateral"]', (g) => g.dataset.on)) !== '1') fail('selecting lateral switched it')
+  await page.click('[data-testid="stack-node-off"]')
+  if ((await page.$eval('[data-testid="stack-node-lateral"]', (g) => g.dataset.on)) !== '0') fail('lateral did not switch off in the draft')
+  await shotP('panels_stack.png')
+  let comps = await nextReady(() => page.click('[data-testid="stack-apply"]'))
+  if (comps.includes('lateral')) fail(`lateral still on after Apply: ${comps}`)
+  await page.click('[data-testid="stack-close"]')
+  await page.waitForSelector('[data-testid="stack-hint"]', { visible: true })
+  await shotP('panels_stack_hint.png')
+  await page.click('[data-testid="stack-hint-open"]')
+  await page.waitForSelector('[data-testid="stack-map"]', { visible: true })
+  comps = await nextReady(() => page.click('[data-testid="stack-full"]'))
+  if (!comps.includes('lateral')) fail(`lateral not back after Full stack: ${comps}`)
+  if (await page.$('[data-testid="stack-hint"]')) fail('the stack hint stayed after Full stack')
+  await page.click('[data-testid="stack-close"]')
+  out.stack = 'lateral selected, switched off, applied (hint shown), back with Full stack'
+
+  // ---- the tour: it dims the page around each step's target
+  await page.click('[data-testid="tips-open"]')
+  await page.waitForSelector('[data-testid="tour"]')
+  for (let i = 0; i < 2; i++) await page.click('[data-testid="tour-next"]')
+  await sleep(500)
+  await shotP('panels_tour.png')
+  await page.click('[data-testid="tour-skip"]')
+  if (await page.$('[data-testid="tour"]')) fail('the tour did not close')
+  out.tour = 'ok'
+
+  // ---- the whole page, dark, sections open and the settings window on its Scenarios tab (opened last, a press elsewhere closes it)
+  await openSection('scenarios-section', 'route-load')
   await page.evaluate(() => window.__playground.scene.fit())
   await sleep(400)
   await shotP('panels_dark.png')

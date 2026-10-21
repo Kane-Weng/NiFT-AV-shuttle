@@ -3,25 +3,24 @@
  *
  * Description:
  *   The playground's own controls, the things a real shuttle does not have (ARCH.md 7, 8.1, 8.4,
- *   8.5):
- *     - sim clock: pause, run, step n ticks, speed factor (0.1 to 100 or max), reset
- *     - obstacles: the Obstacle tool (click the map to place), drag to move, delete, and what the
- *       stack perceived beside what was placed (only with the perception option)
- *     - GNSS faults: the live presets (now) and the scheduled scenarios of gnss_faults.yaml (reset)
- *     - routes and launch options (localization mode, GNSS feed, perception, filter), on reset
+ *   8.5). The page's bottom bar is one row, like RViz's time panel: run or pause, step n ticks,
+ *   the speed factor, the sim time and real-time factor, and reset. Obstacles are placed with the map's Obstacle tool, and GNSS
+ *   faults come with the fault scenarios.
+ *   The settings window (SettingsDialog.tsx) shows the set-up panes exported here:
+ *     - launch options (localization mode, GNSS feed, perception, filter), on reset
  *     - parameters: set_param on a short whitelist, staged for the next reset
- *     - scenario: save, share as a link (#scenario=...), load from a link or JSON
+ *     - share: save the run as a link (#scenario=...), load one from a link or JSON
+ *   Its Scenarios tab (ScenariosPane.tsx) has the test routes and the GNSS fault scenarios.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSimClient, useSimSnapshot } from '../sim/useSim'
 import type { SimClient } from '../sim/SimClient'
-import type { LiveFaultPreset, PageToWorker, RoutePreset, Scenario, WorkerToPage, XY } from '../protocol'
+import type { PageToWorker, RoutePreset, Scenario, WorkerToPage } from '../protocol'
 import { historyOf } from './history'
-import { OBSTACLE_SIZES, setUi, toggleTool, useUi, type ObstacleSize } from './ui'
-import { centroid, nextObstacleId, pointInPolygon } from './geom'
-import { LAUNCH_CHOICES, PARAMS, faultPresets, launchOptions, routePresets } from './presets'
-import { Badge, Panel, Section, btn, btnActive, input } from './Panel'
+import { LAUNCH_CHOICES, PARAMS, launchOptions } from './presets'
+import { Badge, Pane, btn, btnActive, input } from './Panel'
+import { PauseIcon, PlayIcon, ResetIcon, StepIcon } from './icons'
 import { encodeScenario, parseScenarioInput, scenarioCodeFrom, decodeScenario, urlWithScenario } from '../scenario/codec'
 
 const SPEEDS: (number | 'max')[] = [0.5, 1, 2, 5, 10, 'max']
@@ -41,7 +40,7 @@ function onNext<T extends WorkerToPage['type']>(client: SimClient, type: T, fn: 
  * Resets with launch options, then sends the route's goal once the stack is ready, and starts
  * when the goal is planned (if asked). Like sim_route_run does on ROS.
  */
-function resetThenRoute(client: SimClient, launch: Record<string, unknown>, route: RoutePreset | null, autoStart: boolean, label: string) {
+export function resetThenRoute(client: SimClient, launch: Record<string, unknown>, route: RoutePreset | null, autoStart: boolean, label: string) {
   const h = historyOf(client)
   if (route) {
     onNext(client, 'ready', () => {
@@ -61,240 +60,82 @@ export default function PlaygroundControls() {
   const factor = state?.factor ?? 1
   const h = historyOf(client)
 
+  const seg = (on: boolean) =>
+    `px-2 py-1 text-xs [&+&]:border-l border-gray-300 dark:border-gray-700 disabled:opacity-40 ${on ? 'bg-sky-600 text-white' : 'hover:bg-gray-100 dark:hover:bg-gray-800'}`
+  const group = 'flex rounded-md border border-gray-300 dark:border-gray-700 overflow-hidden'
+
   return (
-    <Panel
-      title="Playground"
-      testid="playground-panel"
-      right={
-        state ? (
-          <span className="font-mono" data-testid="sim-clock">
-            tick {state.tick} · rtf {state.rtf.toFixed(1)}
-          </span>
-        ) : null
-      }
+    <div
+      data-testid="playground-panel"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-1.5 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 shrink-0"
     >
-      <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-        <button data-testid="sim-pause" className={`${btn} w-14 ${paused ? btnActive : ''}`} disabled={!ready} onClick={() => client.send({ type: paused ? 'resume_sim' : 'pause' })}>
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Sim</span>
+      <div className={group} data-testid="sim-bar">
+        <button
+          data-testid="sim-pause"
+          className={`${seg(paused)} flex items-center gap-1 w-[4.5rem]`}
+          disabled={!ready}
+          onClick={() => client.send({ type: paused ? 'resume_sim' : 'pause' })}
+          title={paused ? 'Run the sim clock' : 'Pause the sim clock'}
+        >
+          {paused ? <PlayIcon /> : <PauseIcon />}
           {paused ? 'Run' : 'Pause'}
         </button>
-        <button data-testid="sim-step" className={btn} disabled={!ready || !paused} onClick={() => client.send({ type: 'step', n })} title="Run n ticks of 50 ms while paused">
+        <button data-testid="sim-step" className={`${seg(false)} flex items-center gap-1`} disabled={!ready || !paused} onClick={() => client.send({ type: 'step', n })} title="Run n ticks of 50 ms while paused">
+          <StepIcon />
           Step
         </button>
-        <input data-testid="sim-step-n" type="number" min={1} max={2000} className={`${input} w-14`} value={n} onChange={(e) => setN(Math.max(1, Math.min(2000, Math.round(+e.target.value) || 1)))} />
-        <span className="text-[11px] text-gray-500">ticks</span>
-        <button data-testid="sim-reset" className={`${btn} ml-auto`} disabled={!ready} onClick={() => void h.command({ type: 'reset' }, 'Reset')} title="Rebuild the stack with the current launch options and staged parameters">
-          Reset
-        </button>
+        <input
+          data-testid="sim-step-n"
+          type="number"
+          min={1}
+          max={2000}
+          title="ticks per step"
+          className="w-12 border-l border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-950 px-1 text-xs font-mono"
+          value={n}
+          onChange={(e) => setN(Math.max(1, Math.min(2000, Math.round(+e.target.value) || 1)))}
+        />
       </div>
-      <div className="flex gap-1" data-testid="sim-speeds">
-        {SPEEDS.map((s) => (
-          <button key={s} data-testid={`speed-${s}`} disabled={!ready} onClick={() => client.send({ type: 'speed', factor: s })} className={`${btn} flex-1 px-0 ${factor === s ? btnActive : ''}`}>
-            {s === 'max' ? 'max' : `x${s}`}
-          </button>
-        ))}
-      </div>
-
-      <Obstacles />
-      <GnssFaults />
-      <RoutesAndLaunch />
-      <Params />
-      <ScenarioBox />
-    </Panel>
-  )
-}
-
-// ------------------------------------------------------------------ obstacles
-
-function Obstacles() {
-  const client = useSimClient()
-  const { ready, obstacles, perceived, state } = useSimSnapshot()
-  const { tool, selected, obstacleSize } = useUi()
-  const h = historyOf(client)
-
-  const seen = (poly: XY[]) => !!perceived?.some((p) => p.length && (pointInPolygon(centroid(p), poly) || Math.hypot(centroid(p)[0] - centroid(poly)[0], centroid(p)[1] - centroid(poly)[1]) < 1.5))
-  const addAhead = () => {
-    if (!state) return
-    const { x, y, yaw } = state.pose
-    const sz = OBSTACLE_SIZES[obstacleSize]
-    const id = nextObstacleId(obstacles)
-    void h.command({ type: 'obstacle_add', oid: id, box: { x: x + 12 * Math.cos(yaw), y: y + 12 * Math.sin(yaw), yaw, length: sz.length, width: sz.width } }, `Add ${id}`)
-    setUi({ selected: id })
-  }
-
-  return (
-    <Section
-      title={`Obstacles (${obstacles.length})`}
-      fold="pg.obstacles"
-      defaultOpen
-      testid="obstacles-section"
-      right={
-        <span className="text-[11px]">
-          {perceived === null ? <Badge tone="muted">perception off</Badge> : <Badge tone="info">{`perceived ${perceived.length}`}</Badge>}
-        </span>
-      }
-    >
-      <div className="flex flex-wrap items-center gap-1.5">
-        <button data-testid="tool-obstacle-panel" className={`${btn} ${tool === 'obstacle' ? btnActive : ''}`} onClick={() => toggleTool('obstacle')} title="Click the map to place an obstacle (O)">
-          {tool === 'obstacle' ? 'Click the map…' : 'Place (O)'}
-        </button>
-        <select className={`${input} w-24`} value={obstacleSize} onChange={(e) => setUi({ obstacleSize: e.target.value as ObstacleSize })}>
-          {Object.entries(OBSTACLE_SIZES).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v.label}
-            </option>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[11px] text-gray-500">speed</span>
+        <div className={group} data-testid="sim-speeds" role="radiogroup" aria-label="Sim speed">
+          {SPEEDS.map((s) => (
+            <button key={s} role="radio" aria-checked={factor === s} data-testid={`speed-${s}`} disabled={!ready} onClick={() => client.send({ type: 'speed', factor: s })} className={`${seg(factor === s)} w-10 px-0`}>
+              {s === 'max' ? 'max' : `x${s}`}
+            </button>
           ))}
-        </select>
-        <button className={btn} disabled={!ready || !state} onClick={addAhead} title="Place one 12 m ahead of the shuttle">
-          Ahead
-        </button>
-        <button className={btn} disabled={!ready || !obstacles.length} onClick={() => void h.command({ type: 'set_obstacles', obstacles: [] }, 'Clear obstacles')}>
-          Clear
-        </button>
+        </div>
       </div>
-      <ul className="mt-1.5 space-y-px" data-testid="obstacle-list">
-        {obstacles.map((o) => {
-          const c = centroid(o.poly)
-          return (
-            <li key={o.oid} className={`flex items-center gap-2 rounded px-1 text-xs ${selected === o.oid ? 'bg-sky-100 dark:bg-sky-900/40' : ''}`}>
-              <button className="font-mono font-semibold w-8 text-left" onClick={() => setUi({ selected: o.oid })}>
-                {o.oid}
-              </button>
-              <span className="font-mono text-gray-500">
-                {c[0].toFixed(1)}, {c[1].toFixed(1)}
-              </span>
-              {perceived !== null && (seen(o.poly) ? <Badge tone="ok">seen</Badge> : <Badge tone="muted">unseen</Badge>)}
-              <button data-testid={`obstacle-del-${o.oid}`} className="ml-auto text-gray-400 hover:text-red-500 px-1" title="Delete" onClick={() => void h.command({ type: 'obstacle_remove', oid: o.oid }, `Remove ${o.oid}`)}>
-                ✕
-              </button>
-            </li>
-          )
-        })}
-      </ul>
-      <p className="mt-1 text-[11px] text-gray-500 leading-4">
-        Drag an obstacle on the map to move it. Delete removes the selected one.{' '}
-        {perceived === null
-          ? 'Perception is off (sim_kinematic): the stack does not see obstacles and the safety filter is none. Turn perception on under Launch.'
-          : 'Dashed outlines are what /obstacles held (sensor range and field of view).'}
-      </p>
-    </Section>
+      {state && (
+        <div className="flex items-center gap-3 font-mono text-[11px] tabular-nums text-gray-500 dark:text-gray-400" data-testid="sim-clock">
+          <span>
+            sim time <span className="text-gray-800 dark:text-gray-200">{state.t.toFixed(1)} s</span>
+          </span>
+          <span className="hidden sm:inline">tick {state.tick}</span>
+          <span title="real-time factor: sim seconds per wall second">rtf {state.rtf.toFixed(1)}</span>
+        </div>
+      )}
+      <button
+        data-testid="sim-reset"
+        className="ml-auto flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium bg-red-600 hover:bg-red-500 text-white disabled:opacity-40"
+        disabled={!ready}
+        onClick={() => void h.command({ type: 'reset' }, 'Reset')}
+        title="Rebuild the stack with the current launch options and staged parameters"
+      >
+        <ResetIcon />
+        Reset
+      </button>
+    </div>
   )
 }
 
-// ------------------------------------------------------------------ GNSS faults
+// ------------------------------------------------------------------ launch options
 
-function GnssFaults() {
+export function LaunchOptions() {
   const client = useSimClient()
   const { ready, readyInfo } = useSimSnapshot()
-  const { live, scheduled } = useMemo(() => faultPresets(readyInfo), [readyInfo])
-  const routes = useMemo(() => routePresets(readyInfo), [readyInfo])
-  const [liveName, setLiveName] = useState('')
-  const [params, setParams] = useState<Record<string, string>>({})
-  const [schedName, setSchedName] = useState('')
-  const preset: LiveFaultPreset | undefined = live.find((p) => p.name === liveName) ?? live[0]
-  const sched = scheduled.find((s) => s.name === schedName) ?? scheduled[0]
-  const h = historyOf(client)
-
-  useEffect(() => {
-    if (preset) setParams(Object.fromEntries(Object.entries(preset.params ?? {}).map(([k, v]) => [k, String(v)])))
-  }, [preset?.name]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const apply = () => {
-    if (!preset) return
-    const out: Record<string, number | string> = {}
-    for (const [k, v] of Object.entries(params)) {
-      const def = preset.params[k]
-      out[k] = typeof def === 'number' ? Number(v) : v
-    }
-    void h.command({ type: 'gnss_fault', preset: preset.name, params: out }, `GNSS fault ${preset.name}`)
-  }
-
-  const runScheduled = () => {
-    if (!sched) return
-    const route = routes.find((r) => r.id === sched.route) ?? null
-    resetThenRoute(client, { gnss_faults: sched.name, ...(route ? { spawn: route.id } : {}) }, route, true, `Fault scenario ${sched.name}`)
-  }
-
-  return (
-    <Section title="GNSS faults" fold="pg.gnss" testid="gnss-section" right={<span className="text-[11px] text-gray-500">{live.length + scheduled.length} presets</span>}>
-      {live.length === 0 && scheduled.length === 0 && <p className="text-xs text-gray-500">The worker sent no fault presets.</p>}
-      {live.length > 0 && (
-        <div>
-          <div className="text-[11px] text-gray-500 mb-1">Now (from the next tick)</div>
-          <div className="flex gap-1.5 mb-1">
-            <select data-testid="fault-live" className={`${input} flex-1`} value={preset?.name ?? ''} onChange={(e) => setLiveName(e.target.value)}>
-              {(['sim', 'link'] as const).map((k) => (
-                <optgroup key={k} label={k === 'sim' ? 'sim GNSS (GnssFault)' : 'Octane link'}>
-                  {live
-                    .filter((p) => p.kind === k)
-                    .map((p) => (
-                      <option key={p.name} value={p.name}>
-                        {p.name}
-                      </option>
-                    ))}
-                </optgroup>
-              ))}
-            </select>
-            <button data-testid="fault-apply" className={btn} disabled={!ready || !preset} onClick={apply}>
-              Apply
-            </button>
-          </div>
-          {preset?.doc && <div className="text-[11px] text-gray-500 mb-1">{preset.doc}</div>}
-          <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-            {Object.entries(params).map(([k, v]) => (
-              <label key={k} className="flex items-center justify-between gap-1 text-[11px]">
-                <span className="text-gray-500">{k}</span>
-                {k === 'antenna' ? (
-                  <select className={`${input} w-20`} value={v} onChange={(e) => setParams({ ...params, [k]: e.target.value })}>
-                    {['both', 'front', 'rear'].map((a) => (
-                      <option key={a}>{a}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input className={`${input} w-20`} value={v} onChange={(e) => setParams({ ...params, [k]: e.target.value })} />
-                )}
-              </label>
-            ))}
-          </div>
-        </div>
-      )}
-      {scheduled.length > 0 && (
-        <div className="mt-2">
-          <div className="text-[11px] text-gray-500 mb-1">Scenario of gnss_faults.yaml (reset on its route, goal, start)</div>
-          <div className="flex gap-1.5">
-            <select data-testid="fault-scenario" className={`${input} flex-1 min-w-0`} value={sched?.name ?? ''} onChange={(e) => setSchedName(e.target.value)}>
-              {scheduled.map((s) => (
-                <option key={s.name} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-            <button className={btn} disabled={!ready || !sched} onClick={runScheduled}>
-              Run
-            </button>
-          </div>
-          {sched && (
-            <div className="mt-1 text-[11px] text-gray-500 font-mono break-words">
-              route {sched.route ?? '-'} · {sched.faults.length ? sched.faults.map((f) => Object.entries(f).map(([k, v]) => `${k}=${String(v)}`).join(' ')).join('; ') : 'no faults (control)'}
-              {sched.target ? ` · target ${JSON.stringify(sched.target)}` : ''}
-            </div>
-          )}
-        </div>
-      )}
-    </Section>
-  )
-}
-
-// ------------------------------------------------------------------ routes and launch options
-
-function RoutesAndLaunch() {
-  const client = useSimClient()
-  const { ready, readyInfo } = useSimSnapshot()
-  const routes = useMemo(() => routePresets(readyInfo), [readyInfo])
   const current = useMemo(() => launchOptions(readyInfo), [readyInfo])
-  const [routeId, setRouteId] = useState('')
-  const [autoStart, setAutoStart] = useState(false)
   const [form, setForm] = useState<Record<string, string>>({})
-  const route = routes.find((r) => r.id === routeId) ?? routes[0]
 
   useEffect(() => {
     setForm({
@@ -327,26 +168,8 @@ function RoutesAndLaunch() {
   }
 
   return (
-    <Section title="Routes and launch" fold="pg.launch" testid="launch-section" right={<span className="text-[11px] font-mono text-gray-500">{String(current.localization ?? '')}</span>}>
-      {routes.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5 mb-2">
-          <select data-testid="route-select" className={`${input} flex-1 min-w-0`} value={route?.id ?? ''} onChange={(e) => setRouteId(e.target.value)}>
-            {routes.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.id} {r.description ?? r.name ?? ''}
-              </option>
-            ))}
-          </select>
-          <button data-testid="route-load" className={btn} disabled={!ready || !route} onClick={() => route && resetThenRoute(client, { spawn: route.id, gnss_faults: '' }, route, autoStart, `Route ${route.id}`)}>
-            Load
-          </button>
-          <label className="flex items-center gap-1 text-[11px] text-gray-500">
-            <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} /> start
-          </label>
-        </div>
-      ) : (
-        <p className="text-xs text-gray-500 mb-2">The worker sent no test routes.</p>
-      )}
+    <Pane title="Launch options" testid="launch-section" right={<span className="text-[11px] font-mono text-gray-500">{String(current.localization ?? '')}</span>}>
+      <p className="text-[11px] text-gray-500 mb-2 leading-4">How the stack is launched. Applying rebuilds it with a reset.</p>
       <div className="grid grid-cols-2 gap-x-2 gap-y-1">
         {(Object.keys(LAUNCH_CHOICES) as (keyof typeof LAUNCH_CHOICES)[]).map((k) => (
           <label key={k} className="flex items-center justify-between gap-1 text-[11px]">
@@ -371,7 +194,7 @@ function RoutesAndLaunch() {
         </button>
         <span className="text-[11px] text-gray-500">{changed ? 'changed, not applied' : 'as running'}</span>
       </div>
-    </Section>
+    </Pane>
   )
 }
 
@@ -381,7 +204,7 @@ function defaultOf(k: string): string {
 
 // ------------------------------------------------------------------ parameters
 
-function Params() {
+export function Params() {
   const client = useSimClient()
   const { ready, readyInfo } = useSimSnapshot()
   const applied = (launchOptions(readyInfo).params ?? {}) as Record<string, Record<string, unknown>>
@@ -402,7 +225,7 @@ function Params() {
   const nStaged = Object.keys(staged).length
 
   return (
-    <Section title="Parameters" fold="pg.params" testid="params-section" right={nStaged ? <Badge tone="warn">{`${nStaged} staged`}</Badge> : null}>
+    <Pane title="Parameters" testid="params-section" right={nStaged ? <Badge tone="warn">{`${nStaged} staged`}</Badge> : null}>
       <p className="text-[11px] text-gray-500 mb-1 leading-4">The nodes read parameters at start-up, so a change takes effect on the next reset (trajectory_controller, planning.yaml values as default).</p>
       <table className="w-full text-[11px]">
         <tbody>
@@ -441,7 +264,7 @@ function Params() {
       <button className={`${btn} mt-1.5 ${nStaged ? btnActive : ''}`} disabled={!ready} onClick={() => void h.command({ type: 'reset' }, 'Reset')}>
         Reset to apply
       </button>
-    </Section>
+    </Pane>
   )
 }
 
@@ -468,7 +291,7 @@ export function saveScenario(client: SimClient): Promise<Scenario> {
   })
 }
 
-function ScenarioBox() {
+export function ScenarioBox() {
   const client = useSimClient()
   const { ready } = useSimSnapshot()
   const [link, setLink] = useState('')
@@ -517,8 +340,8 @@ function ScenarioBox() {
   }
 
   return (
-    <Section title="Scenario" fold="pg.scenario" testid="scenario-section">
-      <p className="text-[11px] text-gray-500 mb-1 leading-4">A scenario is the launch options plus every command with its tick. Loading one resets and replays it exactly.</p>
+    <Pane title="Save and share this run" testid="scenario-section">
+      <p className="text-[11px] text-gray-500 mb-1 leading-4">A saved run is the launch options plus every command with its tick. Loading one resets and replays it exactly.</p>
       <div className="flex gap-1.5">
         <button data-testid="scenario-share" className={btn} disabled={!ready} onClick={() => void share()}>
           Save and share link
@@ -535,7 +358,7 @@ function ScenarioBox() {
         </button>
       </div>
       {msg && <div className={`mt-1 text-[11px] ${msg.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>{msg.text}</div>}
-    </Section>
+    </Pane>
   )
 }
 

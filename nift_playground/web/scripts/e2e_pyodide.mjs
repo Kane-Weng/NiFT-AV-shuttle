@@ -27,6 +27,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer'
+import { closeSettings, openSection as openSettingsSection, toggleTheme } from './settings.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')
@@ -113,11 +114,7 @@ try {
   }
   const status = async () => (await st())?.status ?? null
   const click = (id) => page.click(`[data-testid="${id}"]`)
-  const openSection = async (section, probe) => {
-    if (await page.$(`[data-testid="${section}"] [data-testid="${probe}"]`)) return
-    await page.click(`[data-testid="${section}"] button`)
-    await page.waitForSelector(`[data-testid="${section}"] [data-testid="${probe}"]`, { timeout: 3000 })
-  }
+  const openSection = (section, probe) => openSettingsSection(page, section, probe)
   const nextReady = async (before, ms = 60000) =>
     page.waitForFunction((b) => window.__playground.client.snapshot.ready && window.__playground.client.snapshot.readyInfo !== b, { timeout: ms }, before)
   const run = async (factor) => {
@@ -131,7 +128,8 @@ try {
 
   // ------------------------------------------------------------------ 1. boot
   const t0 = Date.now()
-  await page.goto(`${url}?theme=dark`, { waitUntil: 'load' })
+  // follow=0: the camera stays put, so map clicks land where they were projected
+  await page.goto(`${url}?theme=dark&follow=0&log=1`, { waitUntil: 'load' })
   await page.waitForSelector('[data-testid="boot-overlay"]', { timeout: 10000 })
   await page.waitForFunction(() => window.__playground?.mapReady === true, { timeout: 30000 })
   await page.screenshot({ path: path.join(OUT, 'e2e_boot.png') })
@@ -173,11 +171,12 @@ try {
 
   /** Loads the route through the panel, clicks its goal on the map and waits for the path. */
   const loadRouteAndGoal = async () => {
-    await openSection('launch-section', 'route-select')
-    await page.select('[data-testid="route-select"]', route.id)
+    await openSection('scenarios-section', `route-${route.id}`)
+    await click(`route-${route.id}`)
     const before = (await snap()).readyInfo
     await click('route-load')
     await nextReady(before)
+    await closeSettings(page)
     // Route Load sends the route's goal itself. Click it on the map as well, the way a user sets one.
     await until(async () => (await snap()).path.length > 1, 'the path of the route goal')
     const [gx, gy] = route.goal
@@ -211,10 +210,10 @@ try {
   await page.evaluate((p) => window.__playground.scene.focus(p.x, p.y, 70), sp.pose)
   await sleep(500)
   await page.screenshot({ path: path.join(OUT, 'e2e_driving_dark.png') })
-  await click('theme-toggle')
+  await toggleTheme(page)
   await sleep(500)
   await page.screenshot({ path: path.join(OUT, 'e2e_driving_light.png') })
-  await click('theme-toggle')
+  await toggleTheme(page)
 
   // pause and step n: exactly n ticks, and nothing while paused
   const tick0 = (await st()).tick
@@ -279,16 +278,9 @@ try {
   await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING', 15000)
   await run(2)
   await until(async () => (await st()).speed > 1.5, 'speed before the fault', 30000)
-  await openSection('gnss-section', 'fault-live')
-  await page.select('[data-testid="fault-live"]', 'dropout')
-  await page.evaluate(() => {
-    const el = [...document.querySelectorAll('[data-testid="gnss-section"] label')].find((l) => l.textContent.startsWith('duration_s'))
-    const input = el.querySelector('input')
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '3')
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
+  // Live faults have no buttons any more (the page offers the fault scenarios); the worker still takes them
   const tFault = (await st()).t
-  await click('fault-apply')
+  await page.evaluate(() => window.__playground.client.send({ type: 'gnss_fault', preset: 'dropout', params: { duration_s: 3 } }))
   await until(async () => (await status()) === 'SAFE_STOP', 'SAFE_STOP after the dropout', 30000)
   const tStop = (await st()).t
   await page.waitForSelector('[data-testid="safe-stop-banner"]')
@@ -326,11 +318,11 @@ try {
   await click('cmd-start')
   await until(async () => (await status()) === 'NAVIGATING', 'NAVIGATING before E-STOP', 15000)
   await sleep(1500)
-  await click('cmd-estop')
+  // The page has no E-STOP button any more; the service is still there
+  const estopReply = (await page.evaluate(() => window.__playground.client.request({ type: 'cmd', name: 'estop' }))).message
   await until(async () => (await status()) === 'ESTOP', 'ESTOP after E-STOP', 15000)
   await until(async () => (await st()).ecu === 'ESTOP', 'the ECU latched by the E-stop frame', 15000)
   await until(async () => (await st()).speed < 0.05, 'the stop after E-STOP', 30000)
-  const estopReply = await text('[data-testid="last-reply"]')
   if (!estopReply.includes('E-STOP engaged')) fail(`E-STOP reply: ${estopReply}`)
   if (!(await page.$eval('[data-testid="cmd-resume"]', (b) => b.disabled))) fail('Resume is enabled in ESTOP')
   result.estop_stop = 'Stop: SAFE_STOP, Resume -> IDLE. E-STOP: ESTOP and the ECU latched, Resume disabled'

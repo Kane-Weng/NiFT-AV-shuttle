@@ -2,21 +2,28 @@
  * File: App.tsx
  *
  * Description:
- *   The page shell of the web playground: a header, the map view with the log dock under it, and a
- *   sidebar with the operator panel, telemetry and playground controls. The map loads in the page first, so it
- *   shows before the sim worker is ready.
+ *   The page shell of the web playground: a header, the map view (with the ROS log under it when
+ *   that is turned on), a sidebar with the operator panel and telemetry, and the sim clock as a bar
+ *   along the bottom, like RViz's time panel. The header's right end has three buttons: the guided tour (light bulb), the stack window (nodes and
+ *   their health) and the settings window (view options, scenarios, launch, parameters, share).
+ *   One window is open at a time. The map loads in the page first, so it shows before the sim
+ *   worker is ready.
  *
  *   URL options: ?sim=pyodide (the default, the real stack) or ?sim=mock, ?theme=dark|light, ?cam=ortho|persp, and a scenario as
  *   #scenario=<code> (or ?scenario=<code>), loaded once the sim is ready.
  */
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import MapView from './scene/MapView'
 import OperatorPanel from './panels/OperatorPanel'
 import TelemetryPanel from './panels/TelemetryPanel'
 import PlaygroundControls from './panels/PlaygroundControls'
 import LogDock from './panels/LogDock'
-import StatusPill from './panels/StatusPill'
+import SettingsDialog from './panels/SettingsDialog'
+import StackDialog from './panels/StackDialog'
+import Tour from './panels/Tour'
+import { SettingsIcon, StackIcon, TipsIcon } from './panels/icons'
+import { getUi, setUi, useUi } from './panels/ui'
 import { historyOf } from './panels/history'
 import { SimContext, useSimSnapshot } from './sim/useSim'
 import type { SimClient, SimKind } from './sim/SimClient'
@@ -36,17 +43,6 @@ function initialTheme(): ThemeName {
     // storage blocked: fall back to the RViz look
   }
   return 'dark'
-}
-
-function SimStatus({ kind }: { kind: SimKind }) {
-  const { ready, progress } = useSimSnapshot()
-  const dot = ready ? 'bg-green-500' : 'bg-yellow-400 animate-pulse'
-  return (
-    <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400" data-testid="sim-status">
-      <div className={`w-2 h-2 rounded-full ${dot}`} />
-      {ready ? `Sim ready (${kind})` : progress ? `${progress.stage} ${progress.pct.toFixed(0)}%` : 'Starting sim…'}
-    </div>
-  )
 }
 
 const STAGE_TEXT: Record<string, string> = {
@@ -72,7 +68,7 @@ function BootOverlay({ kind }: { kind: SimKind }) {
           <>
             <div className="font-semibold text-red-600 dark:text-red-400 mb-1">The sim did not start</div>
             <div className="text-xs font-mono break-words text-gray-700 dark:text-gray-300" data-testid="boot-error">{failed.message}</div>
-            <div className="text-[11px] text-gray-500 mt-2">The traceback is under Errors in the log dock. Reload to try again.</div>
+            <div className="text-[11px] text-gray-500 mt-2">The traceback is under Errors in the ROS log below. Reload to try again.</div>
           </>
         ) : (
           <>
@@ -99,6 +95,34 @@ export default function App({ client }: { client: SimClient }) {
   const [theme, setTheme] = useState<ThemeName>(initialTheme)
   const [map, setMap] = useState<LaneletMap | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
+  // In the shared page state, so a panel can open one (the operator panel's stack hint)
+  const { win } = useUi()
+  const setWin = (w: typeof win) => setUi({ win: w })
+  const close = useCallback(() => setUi({ win: null }), [])
+  const [toured, setToured] = useState(() => {
+    try {
+      return localStorage.getItem('playground.toured') === '1'
+    } catch {
+      return true
+    }
+  })
+  const toggle = (w: 'settings' | 'stack' | 'tour') => {
+    setWin(win === w ? null : w)
+    if (w === 'tour' && !toured) {
+      setToured(true)
+      try {
+        localStorage.setItem('playground.toured', '1')
+      } catch {
+        // storage blocked: the hint shows again next visit
+      }
+    }
+  }
+  const headerBtn = (on: boolean) =>
+    `relative p-1 rounded-md transition-colors ${on ? 'bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-white' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-gray-800'}`
+  const { log } = useUi()
+
+  // A sim that did not start shows its traceback in the log, so the log comes on
+  useEffect(() => client.subscribe((s) => s.error?.fatal && !getUi().log && setUi({ log: true })), [client])
   const kind: SimKind = client.kind
   historyOf(client) // start keeping plots, events and errors from the first message
 
@@ -125,18 +149,22 @@ export default function App({ client }: { client: SimClient }) {
             <span className="font-bold tracking-widest text-sm">NIFT</span>
             <span className="text-gray-500 text-xs">Web Playground</span>
           </div>
-          <div className="flex items-center gap-4">
-            <StatusPill />
-            <SimStatus kind={kind} />
-            <button
-              data-testid="theme-toggle"
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
-            >
-              {theme === 'dark' ? 'Light' : 'Dark'}
+          <div className="flex items-center gap-1">
+            <button data-testid="tips-open" data-dialog-toggle onClick={() => toggle('tour')} aria-label="Guided tour" title="Guided tour" className={headerBtn(win === 'tour')}>
+              <TipsIcon />
+              {!toured && <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
+            </button>
+            <button data-testid="stack-open" data-dialog-toggle onClick={() => toggle('stack')} aria-label="Stack" aria-expanded={win === 'stack'} title="Stack: nodes and their health" className={headerBtn(win === 'stack')}>
+              <StackIcon />
+            </button>
+            <button data-testid="settings-open" data-dialog-toggle onClick={() => toggle('settings')} aria-label="Settings" aria-expanded={win === 'settings'} title="Settings" className={headerBtn(win === 'settings')}>
+              <SettingsIcon />
             </button>
           </div>
         </header>
+        <SettingsDialog open={win === 'settings'} onClose={close} theme={theme} setTheme={setTheme} map={map} />
+        <StackDialog open={win === 'stack'} onClose={close} />
+        <Tour open={win === 'tour'} onClose={close} />
 
         <div className="flex flex-1 min-h-0 flex-col md:flex-row">
           <main className="flex-1 min-w-0 min-h-[55vh] md:min-h-0 flex flex-col">
@@ -147,14 +175,14 @@ export default function App({ client }: { client: SimClient }) {
                 <div className="absolute bottom-10 left-3 right-3 rounded bg-red-600 text-white text-xs p-2">Map failed to load: {mapError}</div>
               )}
             </div>
-            <LogDock />
+            {log && <LogDock />}
           </main>
           <aside className="md:w-[22rem] flex flex-col gap-2 p-2 bg-gray-50 dark:bg-gray-950 md:border-l border-t md:border-t-0 border-gray-200 dark:border-gray-800 overflow-y-auto shrink-0">
             <OperatorPanel />
             <TelemetryPanel />
-            <PlaygroundControls />
           </aside>
         </div>
+        <PlaygroundControls />
       </div>
     </SimContext.Provider>
   )

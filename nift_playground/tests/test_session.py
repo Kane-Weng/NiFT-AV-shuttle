@@ -45,6 +45,7 @@ def test_init_ready_and_presets(playground):
     assert ready['python'] and ready['dt'] == 0.05
     assert ready['launch']['localization_mode'] == 'direct' and ready['launch']['filter_type'] == 'none'
     assert {r['id'] for r in ready['presets']['routes']} >= {'01', '03', '12'}
+    assert ready['presets']['stack']['requires']['lateral'] == [['longitudinal'], ['localization', 'filter'], ['planning', 'static_path']]
     gf = ready['presets']['gnss_faults']                 # ARCH 12: one flat list
     kinds = {p['name']: p['kind'] for p in gf}
     assert kinds['dropout_1.5s_turn'] == 'scheduled' and kinds['outage'] == 'link' and kinds['dropout'] == 'sim'
@@ -70,7 +71,7 @@ def test_bad_launch_options_keep_the_stack(playground):
     s.advance_obj(4)
     out = s.handle_obj({'type': 'reset', 'launch': {'localization': 'gps'}, 'id': 'r'})
     assert out == [{'type': 'reply', 'id': 'r', 'ok': False,
-                    'message': "localization 'gps': expected one of ('direct', 'ekf', 'shadow')"}]
+                    'message': "localization 'gps': expected one of ('direct', 'ekf', 'shadow', 'off')"}]
     out = s.handle_obj({'type': 'scenario_load', 'scenario': {'v': 2}, 'id': 'l'})
     assert not out[-1]['ok']
     assert s.runner.tick == 4                           # still the same stack
@@ -174,6 +175,19 @@ def test_gnss_fault_bad_params_refused(playground):
     out = s.handle_obj({'type': 'gnss_fault', 'preset': 'teleport', 'id': 'f'})
     assert not out[-1]['ok'] and not of(out, 'error')
     assert s.events == []
+
+
+def test_switched_off_components_run(playground):
+    """The launcher view can leave the stack without control or GNSS: the sim still runs and Start is refused."""
+    s, out = new_session(playground, {'components': {'lateral': False, 'longitudinal': False}})
+    assert 'trajectory_controller' not in [n['name'] for n in of(out, 'ready')[0]['launch']['nodes']]
+    out = s.advance_obj(20)
+    out += s.handle_obj({'type': 'cmd', 'name': 'start', 'id': 'start'})
+    assert not of(out, 'reply')[-1]['ok']
+    out = s.handle_obj({'type': 'reset', 'id': 'r', 'launch': {'localization': 'off', 'components': {'gnss': False, 'planning': False, 'longitudinal': False, 'lateral': False}}})
+    assert of(out, 'reply')[-1]['ok'], of(out, 'reply')
+    assert of(s.advance_obj(40), 'state')[-1]['tick'] > 0
+    json.dumps(out, allow_nan=False)
 
 
 def test_services_and_dbw_estop(playground):

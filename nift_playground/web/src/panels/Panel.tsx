@@ -3,7 +3,8 @@
  *
  * Description:
  *   The frame every sidebar panel uses, plus small shared pieces: a title bar that can fold the
- *   panel (remembered per panel in this browser), sub-sections that fold, buttons and badges.
+ *   panel (remembered per panel in this browser), sub-sections that fold, the pane of a settings
+ *   tab, buttons and badges.
  */
 
 import { useState, type ReactNode } from 'react'
@@ -84,6 +85,19 @@ export function Section({ title, fold, defaultOpen = false, right, children, tes
         {right}
       </div>
       {open && <div className="mt-1.5">{children}</div>}
+    </div>
+  )
+}
+
+/** The body of a settings tab: a heading with a note on the right, then the content. */
+export function Pane({ title, right, children, testid }: Omit<PanelProps, 'fold' | 'defaultOpen'>) {
+  return (
+    <div data-testid={testid}>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs font-semibold text-gray-700 dark:text-gray-200">{title}</h3>
+        {right}
+      </div>
+      {children}
     </div>
   )
 }

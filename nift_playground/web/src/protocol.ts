@@ -241,7 +241,19 @@ export interface ReadyMsg {
     gnss_faults: FaultPreset[]
     gnss_dead_zones?: string[]
     routes: RoutePreset[]
+    stack?: StackModel
   }
+}
+
+/**
+ * The launcher view's model (launch_set.stack()): bringup's components with a description, what each
+ * needs (every inner list is "any one of"), and which ones the `components` launch option switches.
+ * localization and filter are switched through the `localization` mode, perception by its own option.
+ */
+export interface StackModel {
+  components: Record<string, string>
+  requires: Record<string, string[][]>
+  switchable: string[]
 }
 
 export interface StateMsg {

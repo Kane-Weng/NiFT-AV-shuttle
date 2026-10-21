@@ -2,17 +2,22 @@
  * File: MapView.tsx
  *
  * Description:
- *   The map area: the three.js canvas, an RViz-like tool bar on top and a status bar below.
- *   It feeds the MapScene from the SimClient without re-rendering React on every state.
+ *   The map area: the three.js canvas with an RViz-like tool bar on top. It feeds the MapScene from
+ *   the SimClient without re-rendering React on every state.
  *
- *   Map tools (panels/ui.ts), as in RViz: 2D Goal (G) and 2D Pose Estimate (P) take a click, or a
- *   drag that gives the heading; Obstacle (O) places one per click. With no tool, a press on an
- *   obstacle selects it and a drag moves it (one obstacle_move on release), Delete removes it,
- *   Escape drops the tool. Anything else pans and rotates the view.
+ *   Map tools (panels/ui.ts), as in RViz: 2D Goal (G) and Set pose (P) take a click, or a drag
+ *   that gives the heading; Obstacle (O) places a car per click, and a click on an obstacle removes
+ *   it. Select (Escape) is no tool: a press on an obstacle selects it and a drag moves it (one
+ *   obstacle_move on release), Delete removes it. Anything else pans and rotates the view. Follow keeps
+ *   the shuttle in the middle and turns the view with its heading: top-down the shuttle points up the
+ *   screen, in 3D the camera chases it from behind. The view glides after it, so GNSS noise does not
+ *   shake it. While following, the pan and the turn are locked, the wheel zooms about the shuttle
+ *   and in 3D right drag still tilts. The page starts on the whole map, then glides onto the shuttle
+ *   and follows it, so a first visit finds it. ?follow=0 stays on the map.
  *
- *   World shows the 3D world under the map (scene/world.ts). It is off by default; the first time
- *   it is turned on, the module and its files (about 2 MB) load, with progress on the button.
- *   ?world=1 turns it on at start.
+ *   The settings window turns the centerlines and the 3D world on and off through panels/ui.ts.
+ *   The world (scene/world.ts) is off by default. The first time it is turned on, the module and
+ *   its files (about 2 MB) load, with progress over the map. ?world=1 turns it on at start.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -20,7 +25,8 @@ import { MapScene, type CameraMode } from './MapScene'
 import type { LaneletMap } from '../map/lanelets'
 import type { ThemeName } from './theme'
 import { useSimClient } from '../sim/useSim'
-import { getUi, setUi, subscribeUi as subscribeSelection, toggleTool, useUi, OBSTACLE_SIZES } from '../panels/ui'
+import { getUi, setUi, subscribeUi as subscribeSelection, toggleTool, useUi, OBSTACLE_SIZES, type WorldLoad } from '../panels/ui'
+import { FitIcon, FollowIcon, GoalIcon, ObstacleIcon, PerspIcon, PoseIcon, SelectIcon, TopDownIcon } from '../panels/icons'
 import { historyOf } from '../panels/history'
 import { centroid, nextObstacleId, pointInPolygon, translate } from '../panels/geom'
 
@@ -42,19 +48,23 @@ declare global {
   }
 }
 
-function ToolButton(props: { active?: boolean; onClick: () => void; children: React.ReactNode; title?: string; testid?: string }) {
+const BAR = 'flex rounded-md border border-gray-300 dark:border-gray-700 bg-white/90 dark:bg-gray-900/90 shadow-sm overflow-hidden'
+
+/** A button of a tool bar group: an icon, and a label from the sm breakpoint up. */
+function ToolButton(props: { active?: boolean; onClick: () => void; icon: React.ReactNode; label: string; title?: string; testid?: string }) {
   return (
     <button
       title={props.title}
+      aria-label={props.label}
+      aria-pressed={props.active}
       data-testid={props.testid}
       onClick={props.onClick}
-      className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-        props.active
-          ? 'bg-sky-600 border-sky-500 text-white'
-          : 'bg-white/90 dark:bg-gray-900/90 border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
+      className={`flex items-center gap-1.5 px-2 py-1 text-xs transition-colors [&+&]:border-l border-gray-300 dark:border-gray-700 ${
+        props.active ? 'bg-sky-600 text-white' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'
       }`}
     >
-      {props.children}
+      {props.icon}
+      <span className="hidden sm:inline">{props.label}</span>
     </button>
   )
 }
@@ -63,13 +73,10 @@ export default function MapView({ map, theme }: Props) {
   const client = useSimClient()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const sceneRef = useRef<MapScene | null>(null)
-  const cursorRef = useRef<HTMLSpanElement>(null)
-  const { tool } = useUi()
+  const { tool, centerlines, world, worldLoad } = useUi()
   const [cam, setCam] = useState<CameraMode>(() => (new URLSearchParams(location.search).get('cam') === 'persp' ? 'persp' : 'ortho'))
-  const [centerlines, setCenterlines] = useState(false)
   const [follow, setFollow] = useState(false)
-  const [world, setWorld] = useState(() => new URLSearchParams(location.search).get('world') === '1')
-  const [worldLoad, setWorldLoad] = useState<{ state: 'idle' | 'loading' | 'ready' | 'error'; pct: number; error?: string }>({ state: 'idle', pct: 0 })
+  const setWorldLoad = (worldLoad: WorldLoad) => setUi({ worldLoad })
 
   useEffect(() => {
     const h = historyOf(client)
@@ -98,6 +105,12 @@ export default function MapView({ map, theme }: Props) {
           return true
         }
         if (t === 'obstacle') {
+          const there = hit(x, y)
+          if (there) {
+            void h.command({ type: 'obstacle_remove', oid: there }, `Remove ${there}`)
+            if (getUi().selected === there) setUi({ selected: null })
+            return true
+          }
           const id = nextObstacleId(client.snapshot.obstacles)
           const sz = OBSTACLE_SIZES[getUi().obstacleSize]
           const yaw = client.snapshot.state?.pose.yaw ?? 0
@@ -152,9 +165,6 @@ export default function MapView({ map, theme }: Props) {
         // A click on the empty map drops the obstacle selection
         if (getUi().selected) setUi({ selected: null })
       },
-      onHover: (x, y) => {
-        if (cursorRef.current) cursorRef.current.textContent = `x ${x.toFixed(2)}  y ${y.toFixed(2)}`
-      },
     })
     sceneRef.current = scene
     scene.setCenterlinesVisible(false)
@@ -162,8 +172,7 @@ export default function MapView({ map, theme }: Props) {
     let prev: Partial<typeof client.snapshot> = {}
     const unsub = client.subscribe((s) => {
       if (s.state && s.state !== prev.state) {
-        scene.setPose(s.state.pose)
-        scene.setPoseEst(s.state.poseEst)
+        scene.setState(s.state.t, s.state.pose, s.state.poseEst, s.state.paused)
       }
       if (s.path !== prev.path) scene.setPath(s.path)
       if (s.goal !== prev.goal) scene.setGoal(s.goal)
@@ -202,6 +211,22 @@ export default function MapView({ map, theme }: Props) {
   useEffect(() => sceneRef.current?.setCenterlinesVisible(centerlines), [centerlines])
   useEffect(() => sceneRef.current?.setFollow(follow), [follow])
 
+  // Once the map and the first pose are in, a short look at the whole map, then onto the shuttle
+  useEffect(() => {
+    if (!map || new URLSearchParams(location.search).get('follow') === '0') return
+    let timer = 0
+    let started = false
+    const off = client.subscribe((s) => {
+      if (!s.state || started) return
+      started = true
+      timer = window.setTimeout(() => setFollow(true), 700)
+    })
+    return () => {
+      off()
+      clearTimeout(timer)
+    }
+  }, [map, client])
+
   // The world loads once, on first use; later toggles only show or hide it
   useEffect(() => {
     const scene = sceneRef.current
@@ -222,7 +247,7 @@ export default function MapView({ map, theme }: Props) {
       .then((w) => {
         if (sceneRef.current !== scene) return w.dispose()
         scene.setWorld(w)
-        scene.setWorldVisible(getWorldWanted())
+        scene.setWorldVisible(getUi().world)
         setWorldLoad({ state: 'ready', pct: 100 })
         window.__playground = {
           ...(window.__playground ?? {}),
@@ -233,13 +258,10 @@ export default function MapView({ map, theme }: Props) {
       .catch((e: unknown) => {
         console.warn('world failed to load', e)
         setWorldLoad({ state: 'error', pct: 0, error: String(e) })
-        setWorld(false)
+        setUi({ world: false })
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [world, client])
-  const worldWanted = useRef(world)
-  worldWanted.current = world
-  const getWorldWanted = () => worldWanted.current
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -263,66 +285,46 @@ export default function MapView({ map, theme }: Props) {
 
   return (
     <div className="relative w-full h-full flex flex-col">
-      <div className={`relative flex-1 min-h-0 ${tool ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'}`}>
+      <div className={`relative flex-1 min-h-0 ${tool ? 'cursor-crosshair' : follow ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'}`}>
         <canvas ref={canvasRef} data-testid="map-canvas" className="block w-full h-full" />
-        <div className="absolute top-2 left-2 flex flex-wrap gap-1.5">
-          <ToolButton testid="tool-goal" active={tool === 'goal'} onClick={() => toggleTool('goal')} title="Click the map for a goal, drag for its heading (G)">
-            2D Goal
-          </ToolButton>
-          <ToolButton testid="tool-pose" active={tool === 'pose'} onClick={() => toggleTool('pose')} title="Click and drag: the shuttle's position and heading, the sim teleports (P)">
-            2D Pose Estimate
-          </ToolButton>
-          <ToolButton testid="tool-obstacle" active={tool === 'obstacle'} onClick={() => toggleTool('obstacle')} title="Click the map to place an obstacle; drag one to move it, Delete removes it (O)">
-            Obstacle
-          </ToolButton>
-          <span className="w-px bg-gray-400/40 mx-0.5" />
-          <ToolButton active={cam === 'ortho'} onClick={() => setCam('ortho')} title="Top-down orthographic">
-            Top-down
-          </ToolButton>
-          <ToolButton active={cam === 'persp'} onClick={() => setCam('persp')} title="Perspective, right drag tilts">
-            3D
-          </ToolButton>
-          <ToolButton onClick={() => sceneRef.current?.fit()} title="Fit the map">
-            Fit
-          </ToolButton>
-          <ToolButton active={follow} onClick={() => setFollow(!follow)} title="Keep the shuttle in view">
-            Follow
-          </ToolButton>
-          <span className="w-px bg-gray-400/40 mx-0.5" />
-          <ToolButton active={centerlines} onClick={() => setCenterlines(!centerlines)} title="Lanelet centrelines">
-            Centerlines
-          </ToolButton>
-          <ToolButton
-            testid="toggle-world"
-            active={world}
-            onClick={() => setWorld(!world)}
-            title="The 3D world from the public digital twin (MIT), with our lanes on its ground. About 2 MB, loaded on first use"
-          >
-            {worldLoad.state === 'loading' ? `World ${worldLoad.pct}%` : 'World'}
-          </ToolButton>
+        <div className="absolute top-2 left-2 right-2 flex flex-wrap gap-2 pointer-events-none [&>*]:pointer-events-auto">
+          <div className={BAR} role="radiogroup" aria-label="Map tools" data-tour="tools">
+            <ToolButton testid="tool-select" active={tool === null} onClick={() => setUi({ tool: null })} icon={<SelectIcon />} label="Select" title="Select (Esc): drag the view, or drag an obstacle to move it. Delete removes the selected one" />
+            <ToolButton testid="tool-goal" active={tool === 'goal'} onClick={() => toggleTool('goal')} icon={<GoalIcon />} label="2D Goal" title="2D Goal (G): click the map, or drag to give the heading" />
+            <ToolButton testid="tool-pose" active={tool === 'pose'} onClick={() => toggleTool('pose')} icon={<PoseIcon />} label="Set pose" title="Set pose (P): click and drag for the shuttle's position and heading. The sim teleports and the stack gets /initialpose" />
+            <ToolButton testid="tool-obstacle" active={tool === 'obstacle'} onClick={() => toggleTool('obstacle')} icon={<ObstacleIcon />} label="Obstacle" title="Obstacle (O): click the road to place a car, click an obstacle to remove it" />
+          </div>
+          <div className={BAR} role="radiogroup" aria-label="Camera" data-tour="camera">
+            <ToolButton testid="cam-ortho" active={cam === 'ortho'} onClick={() => setCam('ortho')} icon={<TopDownIcon />} label="Top-down" title="Top-down view. Right drag rotates" />
+            <ToolButton testid="cam-persp" active={cam === 'persp'} onClick={() => setCam('persp')} icon={<PerspIcon />} label="3D" title="3D view. Right drag rotates and tilts" />
+          </div>
+          <div className={BAR}>
+            <ToolButton
+              testid="view-fit"
+              onClick={() => {
+                setFollow(false)
+                sceneRef.current?.fit()
+              }}
+              icon={<FitIcon />}
+              label="Fit"
+              title="Fit the whole map (stops Follow)"
+            />
+            <ToolButton testid="view-follow" active={follow} onClick={() => setFollow(!follow)} icon={<FollowIcon />} label="Follow" title="Follow the shuttle: it stays in the middle and the view turns with it (top-down it points up, 3D chases it from behind). The wheel zooms about it; dragging does not pan or turn" />
+          </div>
         </div>
         {worldLoad.state === 'loading' && (
-          <div data-testid="world-loading" className="absolute top-11 left-2 px-2 py-1 text-xs rounded bg-white/90 dark:bg-gray-900/90 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200">
+          <div data-testid="world-loading" className="absolute bottom-2 left-2 px-2 py-1 text-xs rounded bg-white/90 dark:bg-gray-900/90 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-200">
             Loading the 3D world… {worldLoad.pct}%
           </div>
         )}
         {worldLoad.state === 'error' && (
-          <div data-testid="world-error" className="absolute top-11 left-2 px-2 py-1 text-xs rounded bg-red-50 dark:bg-red-950 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300">
+          <div data-testid="world-error" className="absolute bottom-2 left-2 px-2 py-1 text-xs rounded bg-red-50 dark:bg-red-950 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300">
             The 3D world did not load: {worldLoad.error}
           </div>
         )}
         {!map && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-400">Loading map…</div>
         )}
-      </div>
-      <div className="flex items-center gap-4 px-3 py-1 text-[11px] font-mono border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 shrink-0">
-        <span>Fixed frame: map</span>
-        <span className="hidden lg:inline">
-          <span className="text-gray-400">shuttle box: truth · </span>
-          <span className="text-cyan-600 dark:text-cyan-400">outline: stack's pose</span>
-        </span>
-        <span ref={cursorRef} data-testid="cursor">x -  y -</span>
-        <span className="ml-auto">{map ? `${map.lanelets.length} lanelets` : ''}</span>
       </div>
     </div>
   )

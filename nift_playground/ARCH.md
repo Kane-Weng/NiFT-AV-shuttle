@@ -204,7 +204,7 @@ The launch name replaces the node's own name for parameters, logging and diagnos
 
 | option | values | maps to |
 |---|---|---|
-| `localization` | `direct` (default), `ekf`, `shadow` | `localization:=<mode>` |
+| `localization` | `direct` (default), `ekf`, `shadow`, `off` | `localization:=<mode>`; `off` is `localization:=false filter:=false` |
 | `gnss_feed` | `ideal` (default), `real` | `gnss_feed:=` |
 | `gnss_faults` | `''`, a scenario name of `gnss_faults.yaml`, or a list of fault dicts | `gnss_faults:=` (a list goes in as a temporary YAML file) |
 | `gnss_dead_zones` | `''` or set names | `gnss_dead_zones:=` |
@@ -214,8 +214,9 @@ The launch name replaces the node's own name for parameters, logging and diagnos
 | `filter_type` | `''`, `distance_stop`, `cbf`, `potential_field`, `none` | `filter_type:=` (only with perception) |
 | `spawn` | `{x, y, yaw}` or a route id `'01'`..`'12'` | `spawn_x/y/yaw:=` |
 | `params` | `{node: {name: value}}` | node-scoped override source appended last for that node |
+| `components` | `{gnss, planning, longitudinal, lateral: true \| false}`, default `{}` | `<component>:=true\|false`. `localization` and `filter` keys become the `localization` mode. A `reset` replaces the whole dict, so the page sends all four. `beacon_node` only starts with `gnss` on, as in bringup |
 
-Changing any of them restarts the stack (`reset`).
+Changing any of them restarts the stack (`reset`). The page's stack window switches `components`, `localization` and `perception` together. Its model comes in `ready.presets.stack` (`launch_set.stack()`): bringup's component descriptions and `REQUIRES`, so the page follows the same rules as the bringup launcher.
 
 ## 7. The deterministic runner
 

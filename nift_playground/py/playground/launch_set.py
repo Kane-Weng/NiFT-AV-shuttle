@@ -27,8 +27,16 @@ DEFAULT_OPTIONS = {
     'filter_type': '',
     'spawn': None,
     'params': {},
+    'components': {},
 }
-LOCALIZATION_MODES = ('direct', 'ekf', 'shadow')
+# 'off': neither map -> base_link provider (the launcher view can switch both off)
+LOCALIZATION_MODES = ('direct', 'ekf', 'shadow', 'off')
+# The components the page may switch with the `components` option (its launcher view). can is the
+# sim and always on, perception is the playground's own option, and localization and filter are the
+# `localization` mode.
+SWITCHABLE = ('gnss', 'planning', 'longitudinal', 'lateral')
+# (localization, filter) -> the `localization` mode, as bringup's LOCALIZATION_MODES the other way
+_MODE_OF = {(True, False): 'direct', (False, True): 'ekf', (True, True): 'shadow', (False, False): 'off'}
 FILTER_TYPES = ('', 'distance_stop', 'cbf', 'potential_field', 'none')
 PROFILE = 'sim_kinematic'
 MAP_REL = 'maps/lanelet2_odr2024.osm'
@@ -217,7 +225,25 @@ def normalize_options(launch=None, base=None) -> dict:
             raise LaunchError('spawn: expected {x, y, yaw} numbers') from None
     if not isinstance(opts['params'], dict):
         raise LaunchError('params: expected {node: {name: value}}')
+    comps = opts['components']
+    if not isinstance(comps, dict):
+        raise LaunchError('components: expected {component: true | false}')
+    comps = {k: v.lower() in ('true', '1', 'yes', 'on') if isinstance(v, str) else bool(v) for k, v in comps.items()}
+    # localization and filter given as switches become the mode, so the mode stays the one source
+    if 'localization' in comps or 'filter' in comps:
+        on = LOCAL_SWITCHES[opts['localization']]
+        key = (comps.pop('localization', on[0]), comps.pop('filter', on[1]))
+        opts['localization'] = _MODE_OF[key]
+    bad = sorted(set(comps) - set(SWITCHABLE))
+    if bad:
+        raise LaunchError(f'components: {bad} cannot be switched here; known: {list(SWITCHABLE)} '
+                          '(and localization, filter)')
+    opts['components'] = comps
     return opts
+
+
+# the `localization` mode -> (localization, filter) switches
+LOCAL_SWITCHES = {mode: key for key, mode in _MODE_OF.items()}
 
 
 def spawn_pose(opts):
@@ -262,7 +288,7 @@ def faults_arg(opts, workdir=None) -> str:
 def cli_args(opts, workdir=None) -> dict:
     """The launch arguments of `ros2 launch nift_bringup system.launch.py profile:=sim_kinematic ...` for these options."""
     cli = {
-        'localization': opts['localization'],
+        'localization': opts['localization'] if opts['localization'] != 'off' else 'false',
         'rviz': 'false',
         'time_factor': '0',
         'lockstep': 'false',
@@ -272,6 +298,10 @@ def cli_args(opts, workdir=None) -> dict:
         'gnss_faults': faults_arg(opts, workdir),
         'gnss_checks': opts['gnss_checks'],
     }
+    if opts['localization'] == 'off':
+        cli['filter'] = 'false'
+    for c, v in opts['components'].items():
+        cli[c] = 'true' if v else 'false'
     pose = spawn_pose(opts)
     if pose is not None:
         cli['spawn_x'], cli['spawn_y'], cli['spawn_yaw'] = (_num(v) for v in pose)
@@ -393,10 +423,11 @@ def repo_nodes(plan) -> list:
                           [dict_source(CARLA_PARAMS + ' carla_bridge', shared),
                            dict_source('kinematic_sim.launch.py overrides', kinematic_overrides(plan))]))
     # 2. GNSS (components/gnss.py)
-    nodes.append(NodeSpec('beacon_node', 'nift_beacon_node', 'nift_sensor.beacon_node', 'BeaconNode',
-                          [file_source('nift_sensor/config/beacon_node.yaml'), _sim_time(plan),
-                           dict_source('{hygiene.enabled}', {'hygiene.enabled': plan.args['gnss_checks'] == 'true'})],
-                          env=octane_env()))
+    if 'gnss' in plan.on:
+        nodes.append(NodeSpec('beacon_node', 'nift_beacon_node', 'nift_sensor.beacon_node', 'BeaconNode',
+                              [file_source('nift_sensor/config/beacon_node.yaml'), _sim_time(plan),
+                               dict_source('{hygiene.enabled}', {'hygiene.enabled': plan.args['gnss_checks'] == 'true'})],
+                              env=octane_env()))
     # 3. map -> base_link (components/localization.py)
     if 'localization' in plan.on:
         nodes.append(NodeSpec('shuttle_dynamic_broadcaster', 'shuttle_dynamic_broadcaster',
@@ -532,4 +563,14 @@ def presets() -> dict:
         out_routes.append({'id': rid, 'name': r.get('name'), 'description': r.get('description'),
                            'spawn': r.get('spawn'), 'goal': r.get('goal'), 'timeout_s': r.get('timeout_s')})
     zones = sorted((load_yaml(GNSS_DEAD_ZONES) or {}).get('sets') or {})
-    return {'routes': out_routes, 'gnss_dead_zones': zones}
+    return {'routes': out_routes, 'gnss_dead_zones': zones, 'stack': stack()}
+
+
+def stack() -> dict:
+    """The launcher view's model: bringup's components of this profile and what each needs (a list of "any one of" lists)."""
+    from nift_bringup.profiles import COMPONENTS, REQUIRES
+    shown = ('can', 'gnss', 'localization', 'filter', 'perception', 'planning', 'longitudinal', 'lateral')
+    return {'components': {c: COMPONENTS[c] for c in shown},
+            'requires': {c: [list(n) if isinstance(n, tuple) else [n] for n in needs]
+                         for c, needs in REQUIRES.items() if c in shown},
+            'switchable': list(SWITCHABLE)}

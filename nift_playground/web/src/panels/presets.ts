@@ -67,7 +67,7 @@ export const PARAMS: ParamSpec[] = [
 ]
 
 export const LAUNCH_CHOICES = {
-  localization: ['direct', 'ekf', 'shadow'],
+  localization: ['direct', 'ekf', 'shadow', 'off'],
   gnss_feed: ['ideal', 'real'],
   gnss_checks: ['true', 'false'],
   perception: ['false', 'true'],

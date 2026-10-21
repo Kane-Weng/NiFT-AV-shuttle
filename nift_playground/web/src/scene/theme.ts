@@ -24,7 +24,7 @@ export interface SceneTheme {
   bodyEdge: number
   front: number
   trail: number
-  pose: number // 2D Pose Estimate arrow
+  pose: number // Set pose arrow
   perceived: number // what /obstacles held
   selected: number // the selected obstacle's outline
   poseEst: number // the stack's pose (TF map -> base_link)

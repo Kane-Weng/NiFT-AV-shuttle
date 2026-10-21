@@ -2,28 +2,27 @@
  * File: OperatorPanel.tsx
  *
  * Description:
- *   The operator panel. It behaves like our RViz NavPanel and the nift_web ControlPanel, against
- *   the same services (ARCH.md 8.1):
- *     - the status from /nav_telemetry STATUS, with the localization and GNSS state beside it
- *     - 2D Goal and 2D Pose Estimate as map tools (click, or drag to give the heading)
- *     - Start Navigation (only in IDLE, like the RViz panel), Stop (/safe_stop, a SAFE_STOP),
- *       Resume (only from SAFE_STOP) and E-STOP (/trigger_estop, which latches: the controller
- *       enters ESTOP and sends the 0x100 frame, so only Reset recovers)
+ *   The operator panel, kept to the buttons. It behaves like our RViz NavPanel and the nift_web
+ *   ControlPanel, against the same services (ARCH.md 8.1):
+ *     - the status from /nav_telemetry STATUS in the title bar
+ *     - Start Navigation (only in IDLE, like the RViz panel), Stop (/safe_stop, a SAFE_STOP) and
+ *       Resume (only from SAFE_STOP)
  *     - Manual mode (/toggle_manual_mode) and keyboard teleop: click the teleop pad, then
  *       W/A/S/D or the arrows, Space stops. Twist at 10 Hz on /teleop_cmd_vel, linear.x = v and
  *       angular.z = wheel angle, A = wheels left in either gear (as the RViz panel). The first
  *       drive key asks for MANUAL if the controller is not in it yet.
- *     - Drive-by-wire: the 0x100 E-stop frame (the virtual ECU latches and holds the brake) and the
- *       ECU power cycle that releases it.
- *   Each command's reply (the service's success and message) shows under the buttons.
+ *   When the stack window left out a node that driving needs, a hint says what no longer works and
+ *   opens the stack window. 2D Goal and Set pose are on the map's tool bar. A refused command says why under the buttons
+ *   for a few seconds; every reply is in the log's Events tab.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSimClient, useSimSnapshot } from '../sim/useSim'
-import type { CmdName, NavStatus, StateMsg } from '../protocol'
-import { historyOf, useHistory } from './history'
-import { toggleTool, useUi } from './ui'
-import { Badge, Panel, Section, btn, btnActive, input, type Tone } from './Panel'
+import type { CmdName, NavStatus } from '../protocol'
+import { historyOf } from './history'
+import { Badge, Panel, Section, input, type Tone } from './Panel'
+import { stackHint } from './StackDialog'
+import { setUi } from './ui'
 import { VEHICLE } from '../geo/site'
 
 export const STATUS_TONE: Record<NavStatus, Tone> = {
@@ -32,18 +31,6 @@ export const STATUS_TONE: Record<NavStatus, Tone> = {
   MANUAL: 'manual',
   SAFE_STOP: 'warn',
   ESTOP: 'error',
-}
-
-export function locTone(s: StateMsg | null): Tone {
-  if (!s || s.locStatus === null) return 'muted'
-  return s.locStatus === 'OK' ? 'ok' : s.locStatus === 'DEGRADED' ? 'warn' : 'error'
-}
-
-export function ecuTone(ecu: string | undefined): Tone {
-  if (ecu === 'ACTIVE') return 'ok'
-  if (ecu === 'ESTOP') return 'error'
-  if (ecu === 'TIMEOUT') return 'warn'
-  return 'muted'
 }
 
 const NO_TELEMETRY = 'No /nav_telemetry yet. The controller starts in IDLE and publishes nothing until it leaves IDLE once.'
@@ -60,23 +47,29 @@ const CMD_LABEL: Record<CmdName, string> = {
 
 export default function OperatorPanel() {
   const client = useSimClient()
-  const { ready, state, path, goal } = useSimSnapshot()
-  const { lastCommand } = useHistory(client)
-  const { tool } = useUi()
+  const { ready, state, readyInfo } = useSimSnapshot()
+  const hint = useMemo(() => stackHint(readyInfo), [readyInfo])
   const [busy, setBusy] = useState<CmdName | null>(null)
+  const [refused, setRefused] = useState<string | null>(null)
   const status = state?.status ?? null
 
   const cmd = useCallback(
     async (name: CmdName) => {
       setBusy(name)
       try {
-        await historyOf(client).command({ type: 'cmd', name }, CMD_LABEL[name])
+        const r = await historyOf(client).command({ type: 'cmd', name }, CMD_LABEL[name])
+        setRefused(r.ok ? null : `${CMD_LABEL[name]}: ${r.message}`)
       } finally {
         setBusy(null)
       }
     },
     [client],
   )
+  useEffect(() => {
+    if (!refused) return
+    const id = setTimeout(() => setRefused(null), 6000)
+    return () => clearTimeout(id)
+  }, [refused])
 
   const stopped = status === 'SAFE_STOP' || status === 'ESTOP'
   // No telemetry yet is the controller's start-up IDLE (the RViz panel's Start is enabled then too)
@@ -84,22 +77,15 @@ export default function OperatorPanel() {
   const big = 'w-full rounded py-2 text-sm font-semibold disabled:opacity-40 transition-colors'
 
   return (
-    <Panel title="Operator" testid="operator-panel" right={<Badge tone={status ? STATUS_TONE[status] : 'muted'} testid="status" title={state && !status ? NO_TELEMETRY : undefined}>{status ?? (state ? 'IDLE (start-up)' : '-')}</Badge>}>
-      <div className="flex flex-wrap items-center gap-1.5 text-xs mb-2">
-        <span className="text-gray-500">mode</span>
-        <span className="font-mono" data-testid="control-mode">
-          {state?.mode ?? '-'}
-        </span>
-        <span className="ml-auto text-gray-500">loc</span>
-        <Badge tone={locTone(state)} testid="loc-status" title={state?.locMessage ?? ''}>
-          {state ? (state.locStatus ?? 'direct') : '-'}
-        </Badge>
-        <span className="text-gray-500">gnss</span>
-        <Badge tone={!state ? 'muted' : state.gnss.ok && !state.gnss.stale ? 'ok' : state.gnss.stale ? 'error' : 'warn'} testid="gnss-status">
-          {!state ? '-' : state.gnss.stale ? 'STALE' : state.gnss.ok ? 'OK' : 'BAD'}
-        </Badge>
-      </div>
-
+    <Panel title="Operator" testid="operator-panel" right={<Badge tone={status ? STATUS_TONE[status] : 'muted'} testid="status" title={state && !status ? NO_TELEMETRY : undefined}>{status ?? (state ? 'IDLE' : '-')}</Badge>}>
+      {hint && (
+        <div data-testid="stack-hint" className="mb-2 rounded border border-sky-400 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800 px-2 py-1.5 text-xs text-sky-900 dark:text-sky-200">
+          <b>{hint.off.join(', ')}</b> {hint.off.length > 1 ? 'are' : 'is'} off in the stack: {hint.text}.{' '}
+          <button data-testid="stack-hint-open" data-dialog-toggle className="underline font-medium hover:text-sky-600 dark:hover:text-sky-300" onClick={() => setUi({ win: 'stack' })}>
+            Open the stack
+          </button>
+        </div>
+      )}
       {status === 'SAFE_STOP' && (
         <div data-testid="safe-stop-banner" className="mb-2 rounded border border-amber-400 bg-amber-50 dark:bg-amber-900/30 dark:border-amber-700 px-2 py-1.5 text-xs text-amber-800 dark:text-amber-300">
           The vehicle is held in <b>Safe Stop</b>. Check the path is clear, then Resume (back to IDLE) and Start again.
@@ -110,60 +96,36 @@ export default function OperatorPanel() {
           The controller is <b>E-stopped</b>. Only a node restart recovers it: Reset the playground.
         </div>
       )}
-      {state?.ecu === 'ESTOP' && (
-        <div data-testid="dbw-latched-banner" className="mb-2 rounded border border-red-400 bg-red-50 dark:bg-red-900/30 dark:border-red-700 px-2 py-1.5 text-xs text-red-800 dark:text-red-300">
-          DBW E-stop latched in the ECU. The brake holds until a power cycle.
+      <div data-tour="nav-buttons">
+        <button
+          data-testid="cmd-start"
+          disabled={!ready || !idle || busy !== null}
+          onClick={() => cmd('start')}
+          className={`${big} mb-1.5 bg-indigo-600 hover:bg-indigo-500 text-white`}
+          title="/start_navigation. Needs IDLE and a path"
+        >
+          {status === 'NAVIGATING' ? 'Navigation running' : status === 'MANUAL' ? 'Navigation disabled in manual' : 'Start navigation'}
+        </button>
+        <div className="grid grid-cols-2 gap-1.5 mb-1.5">
+          <button data-testid="cmd-stop" disabled={!ready} onClick={() => cmd('stop')} className={`${big} bg-slate-500 hover:bg-slate-400 text-white`} title="/safe_stop: a SAFE_STOP that Resume clears">
+            Stop
+          </button>
+          <button
+            data-testid="cmd-resume"
+            disabled={!ready || status !== 'SAFE_STOP'}
+            onClick={() => cmd('resume')}
+            className={`${big} ${status === 'SAFE_STOP' ? 'bg-amber-500 hover:bg-amber-400 text-gray-900' : 'bg-gray-300 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
+            title="/resume: SAFE_STOP back to IDLE"
+          >
+            Resume
+          </button>
+        </div>
+      </div>
+      {refused && (
+        <div className="text-[11px] leading-4 text-red-600 dark:text-red-400 mb-1" data-testid="last-reply">
+          {refused}
         </div>
       )}
-
-      <div className="grid grid-cols-2 gap-1.5 mb-1.5">
-        <button data-testid="goal-mode" className={`${btn} ${tool === 'goal' ? btnActive : ''}`} onClick={() => toggleTool('goal')} title="Click the map for a goal, drag for its heading (G)">
-          {tool === 'goal' ? 'Click the map…' : '2D Goal (G)'}
-        </button>
-        <button data-testid="pose-mode" className={`${btn} ${tool === 'pose' ? btnActive : ''}`} onClick={() => toggleTool('pose')} title="Click and drag on the map: position and heading. The sim teleports (P)">
-          {tool === 'pose' ? 'Drag on the map…' : '2D Pose (P)'}
-        </button>
-      </div>
-      <div className="text-[11px] text-gray-500 mb-2 font-mono" data-testid="goal-info">
-        goal {goal ? `${goal[0].toFixed(1)}, ${goal[1].toFixed(1)}` : '-'} · path {path.length > 1 ? `${path.length} pts` : 'none'}
-        {state?.distEnd != null ? ` · ${state.distEnd.toFixed(1)} m to go` : ''}
-      </div>
-
-      <button
-        data-testid="cmd-start"
-        disabled={!ready || !idle || busy !== null}
-        onClick={() => cmd('start')}
-        className={`${big} mb-1.5 bg-indigo-600 hover:bg-indigo-500 text-white`}
-        title="/start_navigation. Needs IDLE and a path"
-      >
-        {status === 'NAVIGATING' ? 'Navigation running' : status === 'MANUAL' ? 'Navigation disabled in manual' : 'Start navigation'}
-      </button>
-      <div className="grid grid-cols-2 gap-1.5 mb-1.5">
-        <button data-testid="cmd-stop" disabled={!ready} onClick={() => cmd('stop')} className={`${big} bg-slate-500 hover:bg-slate-400 text-white`} title="/safe_stop: a SAFE_STOP that Resume clears">
-          Stop
-        </button>
-        <button
-          data-testid="cmd-resume"
-          disabled={!ready || status !== 'SAFE_STOP'}
-          onClick={() => cmd('resume')}
-          className={`${big} ${status === 'SAFE_STOP' ? 'bg-amber-500 hover:bg-amber-400 text-gray-900' : 'bg-gray-300 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}
-          title="/resume: SAFE_STOP back to IDLE"
-        >
-          Resume
-        </button>
-      </div>
-      <button data-testid="cmd-estop" disabled={!ready} onClick={() => cmd('estop')} className={`${big} py-2.5 tracking-widest bg-red-600 hover:bg-red-500 active:bg-red-700 text-white`} title="/trigger_estop: latches the E-stop in the controller and the ECU. Only Reset recovers">
-        E-STOP
-      </button>
-
-      <div className="mt-1.5 min-h-[2rem] text-[11px] leading-4" data-testid="last-reply">
-        {lastCommand && (
-          <span className={lastCommand.ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
-            {lastCommand.ok ? '✓ ' : '✗ '}
-            {lastCommand.text}
-          </span>
-        )}
-      </div>
 
       <Section title="Manual drive" fold="op.manual" defaultOpen testid="manual-section"
         right={
@@ -181,17 +143,6 @@ export default function OperatorPanel() {
         <Teleop status={status} onManual={() => cmd('manual')} />
       </Section>
 
-      <Section title="Drive-by-wire" fold="op.dbw" testid="dbw-section" right={<Badge tone={ecuTone(state?.ecu)} testid="ecu-mode">{state?.ecu ?? '-'}</Badge>}>
-        <div className="grid grid-cols-2 gap-1.5">
-          <button data-testid="cmd-dbw_estop" disabled={!ready} onClick={() => cmd('dbw_estop')} className={`${btn} border-red-400 text-red-700 dark:text-red-300 dark:border-red-800`} title="0x100 E-stop frame on /to_can_bus: the virtual ECU latches and holds the brake">
-            DBW E-stop
-          </button>
-          <button data-testid="cmd-power_cycle" disabled={!ready} onClick={() => cmd('power_cycle')} className={btn} title="/carla/dbw_power_cycle: key off and on, clears the E-stop latch">
-            Power cycle
-          </button>
-        </div>
-        <p className="mt-1 text-[11px] text-gray-500">The ECU E-stop is the hardware path. It is separate from the controller's SAFE_STOP, and only a power cycle releases it.</p>
-      </Section>
     </Panel>
   )
 }
